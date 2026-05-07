@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sys
 import shutil
 import logging
@@ -36,6 +37,69 @@ file_handler.setLevel(logging.DEBUG)
 file_fmt = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 file_handler.setFormatter(file_fmt)
 logger.addHandler(file_handler)
+
+
+def get_steam_libraries():
+    """尝试通过注册表和 libraryfolders.vdf 获取所有 Steam 库文件夹路径"""
+    steam_path = None
+    libraries = []
+
+    # 1. 尝试 Windows 注册表
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software\Valve\Steam')
+        steam_path = winreg.QueryValueEx(key, 'SteamPath')[0]
+        winreg.CloseKey(key)
+    except Exception:
+        pass
+
+    # 2. 注册表失败则尝试常见安装路径
+    if not steam_path:
+        for p in [
+            r'C:\Program Files (x86)\Steam',
+            r'D:\Steam',
+            r'E:\Steam',
+            r'F:\Steam',
+        ]:
+            if os.path.exists(os.path.join(p, 'steam.exe')):
+                steam_path = p
+                break
+
+    if not steam_path or not os.path.exists(steam_path):
+        return libraries
+
+    libraries.append(steam_path)
+
+    # 3. 解析 libraryfolders.vdf 获取额外的库文件夹
+    vdf_path = os.path.join(steam_path, 'steamapps', 'libraryfolders.vdf')
+    if not os.path.exists(vdf_path):
+        return libraries
+
+    try:
+        with open(vdf_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        # VDF 格式中所有库路径都以 "path" 键标识
+        for raw in re.findall(r'"path"\s+"([^"]+)"', content):
+            p = os.path.normpath(raw.replace('\\\\', '\\'))
+            if os.path.exists(p) and p not in libraries:
+                libraries.append(p)
+    except Exception:
+        pass
+
+    return libraries
+
+
+def auto_detect_paths():
+    """在各 Steam 库中自动搜索 Wallpaper Engine 的缓存文件和内容目录"""
+    for lib in get_steam_libraries():
+        workshopcache = os.path.join(
+            lib, 'steamapps', 'common', 'wallpaper_engine', 'bin', 'workshopcache.json'
+        )
+        if os.path.exists(workshopcache):
+            workshop_dir = os.path.join(lib, 'steamapps', 'workshop', 'content', '431960')
+            return workshopcache, workshop_dir
+
+    return None, None
 
 
 def resolve_path(raw_path):
@@ -122,7 +186,30 @@ def format_size(size_bytes):
 def main():
     logger.info('========== wallpaper-cleaner 开始执行 ==========')
 
-    json_path, workshop_dir = load_config()
+    json_path, workshop_dir = None, None
+
+    # 优先尝试自动检测
+    auto_json, auto_workshop = auto_detect_paths()
+    if auto_json and auto_workshop:
+        logger.info('自动检测到 Wallpaper Engine 路径:')
+        logger.info(f'  workshopcache 文件: {auto_json}')
+        logger.info(f'  workshop 内容目录: {auto_workshop}')
+        logger.info('')
+        try:
+            user_input = input('是否使用自动检测的路径? (y/n，默认 y): ').strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            user_input = 'n'
+        if user_input in ('', 'y', 'yes'):
+            json_path, workshop_dir = auto_json, auto_workshop
+            logger.info('已采用自动检测的路径')
+        else:
+            logger.info('用户选择不使用自动检测路径，回退到配置文件')
+    else:
+        logger.info('未能自动检测到 Wallpaper Engine 路径，回退到配置文件')
+
+    # 自动检测失败或用户拒绝时，从配置文件加载
+    if not json_path or not workshop_dir:
+        json_path, workshop_dir = load_config()
 
     # 读取json，获取所有已订阅的workshopid及其信息
     try:
