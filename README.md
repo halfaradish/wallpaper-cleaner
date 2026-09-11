@@ -2,6 +2,12 @@
 
 自动清理 Wallpaper Engine 中已取消订阅但仍残留在磁盘上的壁纸文件，释放存储空间。
 
+## 环境要求
+
+- Windows 系统（Steam 路径自动检测依赖 Windows 注册表）
+- Python 3.6 及以上版本，无需安装任何第三方依赖
+- 已安装 Steam 和 Wallpaper Engine
+
 ## 工作原理
 
 1. 读取 Wallpaper Engine 的 `workshopcache.json`，获取当前所有已订阅壁纸的 workshop ID

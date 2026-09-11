@@ -3,6 +3,7 @@ import os
 import re
 import sys
 import shutil
+import stat
 import logging
 from logging.handlers import RotatingFileHandler
 from datetime import datetime
@@ -68,7 +69,11 @@ def get_steam_libraries():
     if not steam_path or not os.path.exists(steam_path):
         return libraries
 
+    # 注册表返回的路径是正斜杠形式（如 d:/games/steam），统一规范化
+    steam_path = os.path.normpath(steam_path)
     libraries.append(steam_path)
+    # VDF 与注册表可能以不同大小写/斜杠指向同一库，用 normcase 去重
+    seen = {os.path.normcase(steam_path)}
 
     # 3. 解析 libraryfolders.vdf 获取额外的库文件夹
     vdf_path = os.path.join(steam_path, 'steamapps', 'libraryfolders.vdf')
@@ -81,7 +86,8 @@ def get_steam_libraries():
         # VDF 格式中所有库路径都以 "path" 键标识
         for raw in re.findall(r'"path"\s+"([^"]+)"', content):
             p = os.path.normpath(raw.replace('\\\\', '\\'))
-            if os.path.exists(p) and p not in libraries:
+            if os.path.exists(p) and os.path.normcase(p) not in seen:
+                seen.add(os.path.normcase(p))
                 libraries.append(p)
     except Exception:
         pass
@@ -183,6 +189,31 @@ def format_size(size_bytes):
     return f'{size_bytes:.2f} PB'
 
 
+def ask_yes_no(prompt, ascii_prompt):
+    """读取 y/n 输入。EOF/Ctrl+C 视为拒绝；非中文 locale 下重定向输出时中文提示无法编码，回退 ASCII 提示"""
+    try:
+        return input(prompt).strip().lower()
+    except UnicodeEncodeError:
+        pass
+    except (EOFError, KeyboardInterrupt):
+        return 'n'
+    try:
+        return input(ascii_prompt).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return 'n'
+
+
+def force_rmtree(path):
+    """删除目录树前先清除只读属性（Windows 下只读位会令默认 rmtree 报拒绝访问）"""
+    for dirpath, _dirnames, filenames in os.walk(path):
+        for p in [dirpath] + [os.path.join(dirpath, f) for f in filenames]:
+            try:
+                os.chmod(p, stat.S_IWRITE)
+            except OSError:
+                pass
+    shutil.rmtree(path)
+
+
 def main():
     logger.info('========== wallpaper-cleaner 开始执行 ==========')
 
@@ -195,10 +226,7 @@ def main():
         logger.info(f'  workshopcache 文件: {auto_json}')
         logger.info(f'  workshop 内容目录: {auto_workshop}')
         logger.info('')
-        try:
-            user_input = input('是否使用自动检测的路径? (y/n，默认 y): ').strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            user_input = 'n'
+        user_input = ask_yes_no('是否使用自动检测的路径? (y/n，默认 y): ', '(y/n, default y): ')
         if user_input in ('', 'y', 'yes'):
             json_path, workshop_dir = auto_json, auto_workshop
             logger.info('已采用自动检测的路径')
@@ -218,7 +246,7 @@ def main():
         logger.info(f'已读取订阅缓存: {json_path}')
     except Exception as e:
         logger.error(f'读取JSON文件失败: {e}')
-        return
+        sys.exit(1)
 
     workshop_info = {}
     wallpapers = data.get('wallpapers', [])
@@ -235,7 +263,7 @@ def main():
     # 遍历目标文件夹
     if not os.path.isdir(workshop_dir):
         logger.error(f'workshop目录不存在: {workshop_dir}')
-        return
+        sys.exit(1)
 
     all_folders = os.listdir(workshop_dir)
     total_folders = sum(1 for f in all_folders if os.path.isdir(os.path.join(workshop_dir, f)))
@@ -253,7 +281,7 @@ def main():
         if folder not in workshop_ids:
             dir_size = get_dir_size(folder_path)
             try:
-                shutil.rmtree(folder_path)
+                force_rmtree(folder_path)
                 total_freed_bytes += dir_size
                 deleted_count += 1
                 logger.info(f'已删除: {folder} ({format_size(dir_size)})')
