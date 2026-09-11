@@ -25,15 +25,18 @@ python wallpaper-cleaner.py
 ```
 
 - **自动检测成功**：展示检测到的路径，确认后直接执行清理
-- **自动检测失败**：自动生成 `config.json`，按提示编辑配置文件后重新运行
+- **自动检测失败**：自动生成 `config.yml`，按提示编辑配置文件后重新运行
 
-### 配置文件 (`config.json`)
+### 配置文件 (`config.yml`)
 
-```json
-{
-    "json_path": "D:\\steam\\steamapps\\common\\wallpaper_engine\\bin\\workshopcache.json",
-    "workshop_dir": "D:\\steam\\steamapps\\workshop\\content\\431960"
-}
+配置采用 YAML 格式，支持用 `#` 编写注释：
+
+```yaml
+# Wallpaper Engine 的 workshop 订阅缓存文件路径
+json_path: D:\Steam\steamapps\common\wallpaper_engine\bin\workshopcache.json
+
+# workshop 壁纸内容存放目录
+workshop_dir: D:\Steam\steamapps\workshop\content\431960
 ```
 
 | 字段 | 说明 |
@@ -41,7 +44,9 @@ python wallpaper-cleaner.py
 | `json_path` | Wallpaper Engine 的 workshop 缓存文件路径 |
 | `workshop_dir` | workshop 壁纸内容存放目录 |
 
-路径支持绝对路径和相对路径（相对路径基于脚本所在目录）。
+路径支持绝对路径和相对路径（相对路径基于脚本所在目录）。Windows 路径可不加引号直接书写（引号内的内容不会被转义处理）。
+
+> 兼容说明：旧版 `config.json` 仍会被自动读取；重命名为 `config.yml` 后即可使用注释功能。
 
 ## 日志
 

@@ -10,7 +10,8 @@ from datetime import datetime
 
 # 路径设置
 script_dir = os.path.dirname(os.path.abspath(__file__))
-config_path = os.path.join(script_dir, 'config.json')
+config_path = os.path.join(script_dir, 'config.yml')
+legacy_config_path = os.path.join(script_dir, 'config.json')
 
 # 日志目录（与本脚本同目录下的 logs 文件夹）
 log_dir = os.path.join(script_dir, 'logs')
@@ -117,53 +118,120 @@ def resolve_path(raw_path):
     return os.path.normpath(os.path.join(script_dir, raw_path))
 
 
-def load_config():
-    """加载配置文件，不存在时自动生成默认配置，失败时打印错误并退出"""
-    if not os.path.exists(config_path):
-        logger.warning('未检测到配置文件，正在自动生成默认配置文件...')
-        default_config = {
-            "_comment": "请配置 json_path 和 workshop_dir 的路径，支持绝对路径和相对路径（相对路径基于本脚本所在目录）",
-            "json_path": "",
-            "workshop_dir": ""
-        }
-        try:
-            with open(config_path, 'w', encoding='utf-8') as f:
-                json.dump(default_config, f, ensure_ascii=False, indent=4)
-            logger.info(f'默认配置文件已生成: {config_path}')
-        except Exception as e:
-            logger.error(f'自动生成配置文件失败: {e}')
-            sys.exit(1)
+# 默认配置模板（带注释说明，首次运行时生成）
+DEFAULT_CONFIG_TEMPLATE = r'''# Wallpaper Cleaner 配置文件（支持以 # 开头的注释行）
+#
+# json_path: Wallpaper Engine 的 workshop 订阅缓存文件路径
+# workshop_dir: workshop 壁纸内容存放目录
+# 路径支持绝对路径和相对路径（相对路径基于本脚本所在目录）
+#
+# 示例（去掉行首的 # 即可生效）：
+# json_path: D:\Steam\steamapps\common\wallpaper_engine\bin\workshopcache.json
+# workshop_dir: D:\Steam\steamapps\workshop\content\431960
 
-        logger.info('')
-        logger.info('=' * 60)
-        logger.info('  请先编辑配置文件，填入正确的路径信息：')
-        logger.info(f'  配置文件位置: {config_path}')
-        logger.info('  编辑完成后，重新运行本程序即可。')
-        logger.info('=' * 60)
-        sys.exit(0)
+json_path: ""
+workshop_dir: ""
+'''
 
+
+def parse_config_value(value, lineno, raw_line):
+    """解析单个配置值：支持成对引号与 " #" 形式的行内注释；不处理转义序列，便于直接书写 Windows 路径"""
+    if not value:
+        return ''
+    quote = value[0]
+    if quote in ('"', "'"):
+        end = value.find(quote, 1)
+        if end == -1:
+            raise ValueError(f'第 {lineno} 行引号未闭合: {raw_line}')
+        return value[1:end]
+    if ' #' in value:
+        value = value.split(' #', 1)[0].rstrip()
+    return value
+
+
+def parse_config_text(text):
+    """解析配置内容并返回字典：优先按 JSON 解析（兼容旧配置），失败则按扁平 YAML（key: value + # 注释）解析"""
     try:
-        with open(config_path, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-    except json.JSONDecodeError as e:
-        logger.error(f'配置文件解析失败 ({config_path}): {e}')
-        logger.error('请检查配置文件是否为合法的 JSON 格式，或删除该文件后重新运行以生成默认配置。')
+        config = json.loads(text)
+        if not isinstance(config, dict):
+            raise ValueError('配置顶层必须是键值对结构')
+        return config
+    except json.JSONDecodeError:
+        pass
+
+    config = {}
+    for lineno, line in enumerate(text.splitlines(), 1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith('#') or stripped in ('{', '}', '},'):
+            continue
+        if ':' not in stripped:
+            raise ValueError(f'第 {lineno} 行无法解析: {stripped}')
+        key, _, value = stripped.partition(':')
+        key = key.strip().strip("\"'")
+        if not key:
+            raise ValueError(f'第 {lineno} 行缺少键名: {stripped}')
+        config[key] = parse_config_value(value.strip(), lineno, stripped)
+    return config
+
+
+def read_config_file(path):
+    """读取并解析配置文件，失败时打印错误并退出"""
+    try:
+        # utf-8-sig 兼容带 BOM 的文件（部分 Windows 编辑器保存 UTF-8 时会加 BOM）
+        with open(path, 'r', encoding='utf-8-sig') as f:
+            return parse_config_text(f.read())
+    except ValueError as e:
+        logger.error(f'配置文件解析失败 ({path}): {e}')
+        logger.error('请检查配置文件格式，或删除该文件后重新运行以生成默认配置。')
         sys.exit(1)
     except Exception as e:
-        logger.error(f'读取配置文件失败 ({config_path}): {e}')
+        logger.error(f'读取配置文件失败 ({path}): {e}')
         sys.exit(1)
+
+
+def create_default_config():
+    """生成带注释说明的默认配置文件，提示用户编辑后退出"""
+    logger.warning('未检测到配置文件，正在自动生成默认配置文件...')
+    try:
+        with open(config_path, 'w', encoding='utf-8') as f:
+            f.write(DEFAULT_CONFIG_TEMPLATE)
+        logger.info(f'默认配置文件已生成: {config_path}')
+    except Exception as e:
+        logger.error(f'自动生成配置文件失败: {e}')
+        sys.exit(1)
+
+    logger.info('')
+    logger.info('=' * 60)
+    logger.info('  请先编辑配置文件，填入正确的路径信息：')
+    logger.info(f'  配置文件位置: {config_path}')
+    logger.info('  编辑完成后，重新运行本程序即可。')
+    logger.info('=' * 60)
+    sys.exit(0)
+
+
+def load_config():
+    """加载配置：优先 config.yml，兼容旧版 config.json；两者都不存在时生成默认 config.yml"""
+    config_file = config_path
+    if os.path.exists(config_path):
+        config = read_config_file(config_path)
+    elif os.path.exists(legacy_config_path):
+        config_file = legacy_config_path
+        config = read_config_file(legacy_config_path)
+        logger.info('已读取旧版 config.json；建议重命名为 config.yml，即可使用 # 注释')
+    else:
+        create_default_config()
 
     json_path = resolve_path(config.get('json_path', ''))
     workshop_dir = resolve_path(config.get('workshop_dir', ''))
 
     if not json_path:
-        logger.error(f'配置项 "json_path" 未设置或为空，请编辑配置文件: {config_path}')
+        logger.error(f'配置项 "json_path" 未设置或为空，请编辑配置文件: {config_file}')
         sys.exit(1)
     if not workshop_dir:
-        logger.error(f'配置项 "workshop_dir" 未设置或为空，请编辑配置文件: {config_path}')
+        logger.error(f'配置项 "workshop_dir" 未设置或为空，请编辑配置文件: {config_file}')
         sys.exit(1)
 
-    logger.info(f'配置加载成功: {config_path}')
+    logger.info(f'配置加载成功: {config_file}')
     return json_path, workshop_dir
 
 
