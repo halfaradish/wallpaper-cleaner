@@ -189,11 +189,18 @@ python packaging/build.py --skip-deps
 ### 发版流程
 
 1. 更新 `wallpaper_cleaner/__init__.py` 里的 `__version__`
-2. 提交并打标签：`git tag v2.0.1 && git push origin v2.0.1`
-3. GitHub Actions 会自动跑测试、校验标签与版本号一致、打包、冒烟测试，然后创建 Release 并把 exe 和 `SHA256SUMS.txt` 传上去
+2. 提交并推送分支：`git push origin main`
+3. 打标签并推送：`git tag -a v0.1.0 -m "v0.1.0" && git push origin v0.1.0`
+4. GitHub Actions 会自动跑测试、校验标签与版本号一致、打包、冒烟测试，然后创建 Release 并把 exe 和 `SHA256SUMS.txt` 传上去
 
 标签和代码里的版本号不一致时构建会直接失败，避免发出版本号对不上的包。工作流也支持手动触发，此时只构建并上传 artifact，不发布 Release。
 
 ### 代码签名
 
-当前 exe 未签名，用户首次运行会遇到 SmartScreen 提示。要消除它需要购买代码签名证书，配置好后在 `.github/workflows/release.yml` 的发布步骤前插入签名步骤即可（文件里已留了位置）。
+当前 exe 未签名，用户首次运行会遇到 SmartScreen 提示，绕过方法见本文开头。消除它需要一份代码签名证书；`.github/workflows/release.yml` 里预留了插入签名步骤的位置（必须在生成 `SHA256SUMS.txt` 之前完成签名，否则校验和对不上）。
+
+## 许可协议
+
+采用 [MIT License](LICENSE)，版权归 halfaradish 所有。
+
+桌面窗口模式依赖 pywebview（BSD-3-Clause）、pythonnet 与 clr_loader（MIT），命令行与浏览器面板模式只用 Python 标准库。这些依赖的许可均为宽松许可，与本项目协议兼容。
