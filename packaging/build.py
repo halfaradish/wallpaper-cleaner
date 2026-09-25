@@ -27,6 +27,20 @@ REQUIREMENTS = os.path.join(PROJECT_ROOT, 'requirements-desktop.txt')
 EXE_NAME = 'wallpaper-cleaner.exe'
 
 
+def _force_utf8_console():
+    """日志里有中文，stdout/stderr 必须能编码它们。
+
+    Windows 上输出被重定向时（比如 CI 管道、重定向到文件），
+    Python 会用系统 ANSI 代码页（英文系统是 cp1252），中文 print 直接抛
+    UnicodeEncodeError，构建明明成功却以退出码 1 结束。这里统一改成 UTF-8。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding='utf-8', errors='replace')
+        except (AttributeError, ValueError):
+            pass
+
+
 def venv_python():
     if sys.platform == 'win32':
         return os.path.join(VENV_DIR, 'Scripts', 'python.exe')
@@ -54,6 +68,8 @@ def ensure_deps():
 
 
 def main():
+    _force_utf8_console()
+
     parser = argparse.ArgumentParser(description='构建 wallpaper-cleaner.exe')
     parser.add_argument('--skip-deps', action='store_true', help='跳过虚拟环境准备')
     parser.add_argument('--skip-tests', action='store_true', help='跳过单元测试')

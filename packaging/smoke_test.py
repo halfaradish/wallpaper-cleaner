@@ -26,6 +26,20 @@ STARTUP_TIMEOUT = 120      # 单文件 exe 首次启动要解压，慢一点正�
 POLL_INTERVAL = 1.0
 
 
+def _force_utf8_console():
+    """日志里有中文，stdout/stderr 必须能编码它们。
+
+    Windows 上输出被重定向时（比如 CI 管道），Python 会用系统 ANSI 代码页
+    （英文系统是 cp1252），中文 print 会抛 UnicodeEncodeError，冒烟测试明明
+    通过却以退出码 1 结束。这里统一改成 UTF-8。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding='utf-8', errors='replace')
+        except (AttributeError, ValueError):
+            pass
+
+
 def free_port():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(('127.0.0.1', 0))
@@ -80,6 +94,8 @@ def stop(process):
 
 
 def main():
+    _force_utf8_console()
+
     if len(sys.argv) < 2:
         print('用法: python packaging/smoke_test.py <exe 路径>', file=sys.stderr)
         return 2
