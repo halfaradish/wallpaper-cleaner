@@ -13,6 +13,7 @@
 """
 
 import json
+import locale
 import os
 import socket
 import subprocess
@@ -38,6 +39,24 @@ def _force_utf8_console():
             stream.reconfigure(encoding='utf-8', errors='replace')
         except (AttributeError, ValueError):
             pass
+
+
+def _decode_output(raw):
+    """解子进程的输出
+
+    这是被测的 exe 的输出：实测它按系统 ANSI 代码页输出（中文系统 cp936），
+    而且不受 PYTHONIOENCODING 影响，所以先按本地代码页解。
+
+    check-deps 的输出本身是纯 ASCII，怎么解都对；这里主要是兼容它以后可能的中文输出。
+    """
+    if not raw:
+        return ''
+    for encoding in (locale.getpreferredencoding(False), 'utf-8'):
+        try:
+            return raw.decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            pass
+    return raw.decode('utf-8', 'replace')
 
 
 def free_port():
@@ -104,6 +123,15 @@ def main():
     if not os.path.exists(exe):
         print(f'[smoke] 找不到可执行文件: {exe}', file=sys.stderr)
         return 2
+
+    # 先查依赖：缺 pywebview / pythonnet 时 PyInstaller 只打一行 ERROR 就继续，
+    # 产出的 exe 浏览器面板能用、桌面窗口打不开，不看这一步发现不了
+    print('[smoke] 检查桌面窗口依赖', flush=True)
+    probe = subprocess.run([exe, '--check-deps'], capture_output=True)
+    print(_decode_output(probe.stdout).strip(), flush=True)
+    if probe.returncode != 0:
+        print(_decode_output(probe.stderr).strip(), file=sys.stderr)
+        raise SystemExit(f'[smoke] 失败：桌面窗口依赖不齐全（退出码 {probe.returncode}）')
 
     port = free_port()
     # 把配置与日志写到临时目录，避免污染真实的 %APPDATA%

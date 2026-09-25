@@ -15,6 +15,7 @@
 """
 
 import argparse
+import locale
 import os
 import subprocess
 import sys
@@ -41,6 +42,25 @@ def _force_utf8_console():
             pass
 
 
+def _decode_output(raw):
+    """解子进程的输出
+
+    Windows 上原生进程和普通 CPython 都按系统 ANSI 代码页输出（中文系统是 cp936），
+    不是 UTF-8 —— 先按 UTF-8 解会抛 UnicodeDecodeError，而 cp936 的字节有时恰好
+    也能被 UTF-8 解出来（变成乱码）。所以先试本地代码页，再退回 UTF-8。
+
+    反正这个函数只用于打印诊断信息，解错了也不影响判断，判断只看退出码。
+    """
+    if not raw:
+        return ''
+    for encoding in (locale.getpreferredencoding(False), 'utf-8'):
+        try:
+            return raw.decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            pass
+    return raw.decode('utf-8', 'replace')
+
+
 def venv_python():
     if sys.platform == 'win32':
         return os.path.join(VENV_DIR, 'Scripts', 'python.exe')
@@ -53,8 +73,8 @@ def run(cmd, **kwargs):
     return subprocess.run(cmd, check=True, **kwargs)
 
 
-def ensure_deps():
-    """准备虚拟环境与打包依赖"""
+def ensure_venv():
+    """准备好虚拟环境并装齐依赖，返回该环境的 Python 路径"""
     python = venv_python()
     if not os.path.exists(python):
         print(f'[build] 创建虚拟环境: {VENV_DIR}', flush=True)
@@ -67,16 +87,62 @@ def ensure_deps():
     return python
 
 
+def pick_python(skip_deps):
+    """选打包用的解释器
+
+    只要 .venv-build 在就优先用它 —— --skip-deps 的意思是「跳过安装依赖」（CI 里
+    已经装好了），不是「别用虚拟环境」。这里以前直接退回 sys.executable，于是
+    `python packaging/build.py --skip-deps` 会拿全局 Python 打包，而全局环境通常
+    没有 pythonnet，打出来的 exe 桌面窗口打不开，还看不出来。
+    """
+    venv = venv_python()
+    if os.path.exists(venv):
+        if skip_deps:
+            print(f'[build] 使用已有虚拟环境: {VENV_DIR}', flush=True)
+        else:
+            ensure_venv()
+        return venv
+
+    if skip_deps:
+        print('[build] 没有 .venv-build，将使用当前解释器', flush=True)
+        return sys.executable
+
+    return ensure_venv()
+
+
+def require_desktop_deps(python):
+    """打包前确认依赖确实装在这个解释器里
+
+    缺 pywebview / pythonnet 时 PyInstaller 只会打一行 ERROR 就继续，照样产出一个
+    「浏览器面板能用、桌面窗口打不开」的 exe。这里提前拦住，别等用户双击才发现。
+    """
+    probe = [python, '-c', 'import webview, clr_loader, pythonnet']
+    result = subprocess.run(probe, capture_output=True)
+    if result.returncode == 0:
+        return True
+
+    lines = _decode_output(result.stderr).strip().splitlines()
+    print(f'[build] 打包依赖不全: {python}', file=sys.stderr)
+    if lines:
+        print(f'[build] {lines[-1]}', file=sys.stderr)
+    print('[build] 删掉 .venv-build 后重新运行，或直接执行: '
+          r'.venv-build\Scripts\python.exe packaging/build.py', file=sys.stderr)
+    return False
+
+
 def main():
     _force_utf8_console()
 
     parser = argparse.ArgumentParser(description='构建 wallpaper-cleaner.exe')
-    parser.add_argument('--skip-deps', action='store_true', help='跳过虚拟环境准备')
+    parser.add_argument('--skip-deps', action='store_true',
+                        help='跳过依赖安装（仍优先用 .venv-build）')
     parser.add_argument('--skip-tests', action='store_true', help='跳过单元测试')
     parser.add_argument('--skip-smoke', action='store_true', help='构建后不跑冒烟测试')
     args = parser.parse_args()
 
-    python = sys.executable if args.skip_deps else ensure_deps()
+    python = pick_python(args.skip_deps)
+    if not require_desktop_deps(python):
+        return 1
 
     if not args.skip_tests:
         run([python, '-m', 'unittest', 'discover', '-s', 'tests', '-t', '.'], cwd=PROJECT_ROOT)
