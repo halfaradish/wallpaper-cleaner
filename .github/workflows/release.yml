@@ -52,6 +52,9 @@ jobs:
       - name: 冒烟测试
         run: python packaging/smoke_test.py dist/wallpaper-cleaner.exe
 
+      # 想给 exe 做代码签名的话，在这个位置插入签名步骤（需要准备证书，放在 secrets 里）。
+      # 必须排在「生成校验和」之前：签名会改动 exe 内容，先算校验和会得到与产物不匹配的
+      # SHA256SUMS.txt。未签名的 exe 用户首次运行会遇到 SmartScreen 提示。
       - name: 生成校验和
         shell: bash
         run: |
@@ -79,6 +82,3 @@ jobs:
             dist/SHA256SUMS.txt \
             --title "wallpaper-cleaner $GITHUB_REF_NAME" \
             --generate-notes
-
-      # 想给 exe 做代码签名的话在这里加一步（需要准备证书，放在 secrets 里），
-      # 签完名再执行上面的发布步骤。未签名的 exe 用户首次运行会遇到 SmartScreen 提示。
