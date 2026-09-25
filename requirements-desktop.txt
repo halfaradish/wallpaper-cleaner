@@ -1,0 +1,7 @@
+# 桌面窗口模式与打包所需的依赖
+#
+# 只有「桌面窗口模式」和「自己打包 exe」需要装这些：
+#   python -m pip install -r requirements-desktop.txt
+#
+# 命令行模式与浏览器面板模式仍然只用标准库，不需要安装任何东西。
+pywebview>=4.4,<6
