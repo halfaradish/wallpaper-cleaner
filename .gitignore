@@ -15,3 +15,8 @@ build/
 dist/
 .venv-build/
 packaging/version_info.txt
+
+# 构建时生成的图标与预览图（源头是 packaging/make_icon.py）
+packaging/icon.ico
+packaging/icon-preview.png
+packaging/preview-*.png

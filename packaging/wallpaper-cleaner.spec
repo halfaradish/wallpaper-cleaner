@@ -15,8 +15,12 @@
 
 import os
 import re
+import sys
 
 from PyInstaller.utils.hooks import collect_all
+
+sys.path.insert(0, SPECPATH)
+import make_icon
 
 PROJECT_ROOT = os.path.abspath(os.path.join(SPECPATH, os.pardir))
 PACKAGE_DIR = os.path.join(PROJECT_ROOT, 'wallpaper_cleaner')
@@ -71,6 +75,15 @@ def write_version_file():
 )
 """)
     return path
+
+
+def write_icon_file():
+    """生成 exe 图标
+
+    和版本信息一样在构建时生成而不是往仓库里塞二进制：改造型或调色只改
+    packaging/make_icon.py，不会出现脚本与图标文件不同步的情况。
+    """
+    return make_icon.build_icon(PROJECT_ROOT)
 
 
 # ---------------------------------------------------------------- 收集依赖
@@ -136,4 +149,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     version=write_version_file(),
+    icon=write_icon_file(),
 )

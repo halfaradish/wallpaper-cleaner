@@ -80,6 +80,7 @@ python wallpaper-cleaner.py --desktop    # 桌面窗口模式（需 pywebview）
 | `--host` | 监听地址，默认 `127.0.0.1`（仅本机可访问） |
 | `--no-browser` | 浏览器模式下不自动打开浏览器 |
 | `--dry-run` | 只预览将要删除的内容，不实际删除 |
+| `--check-deps` | 检查桌面窗口所需的依赖是否齐全，然后退出 |
 | `--version` | 输出版本号 |
 
 ```bash
@@ -146,6 +147,7 @@ wallpaper_cleaner/
   static/                       # 面板前端（原生 HTML/CSS/JS，无构建步骤）
 packaging/
   wallpaper-cleaner.spec        # PyInstaller 打包配置
+  make_icon.py                  # 程序图标（纯标准库画出来的，含 favicon 同款造型）
   build.py                      # 一键构建 exe
   smoke_test.py                 # 打包产物冒烟测试
 tests/test_core.py              # 单元测试
@@ -183,11 +185,24 @@ python packaging/build.py
 
 脚本会自动在项目下建 `.venv-build` 虚拟环境、装好 PyInstaller 与 pywebview（不污染全局 Python），跑完单测后打包，最后对产物做冒烟测试。产物在 `dist/wallpaper-cleaner.exe`。
 
-只重新打包（依赖已就绪）：
+只重新打包（依赖已就绪，仍会优先使用 `.venv-build`）：
 
 ```bash
 python packaging/build.py --skip-deps
 ```
+
+### 换程序图标
+
+图标是用 `packaging/make_icon.py` **画出来的**，不是仓库里的二进制文件，构建时由 spec 生成（和版本信息同样做法）。改造型或调色只改这个脚本：
+
+```bash
+python packaging/make_icon.py --preview          # 生成图标，并输出各尺寸与 16px 放大对比图
+python packaging/make_icon.py --design c         # 换造型
+```
+
+可选的造型见脚本里的 `DESIGNS`。任务栏和资源管理器小图标用的是 16px，那个尺寸下认不出来就等于没有图标，所以每个造型都标了实测的可辨认度 —— 改完务必用 `--preview` 出的 16px 放大图确认一眼。换完重新跑 `python packaging/build.py` 即可。
+
+浏览器标签页的图标是 `index.html` 里内联的 SVG（同样造型），换造型时一并改。
 
 ### 发版流程
 
