@@ -88,14 +88,15 @@ code {
 
 .sub {
   margin: 1px 0 0;
-  font-size: 12px;
+  font-size: 12.5px;
   color: var(--muted);
-  font-family: var(--mono);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 62vw;
 }
+
+.sub.warn { color: var(--warn); }
 
 .actions { display: flex; gap: 8px; }
 
@@ -425,6 +426,47 @@ td.col-size { font-family: var(--mono); font-size: 12px; color: var(--text-dim);
 }
 
 .meta { font-size: 11.5px; color: var(--muted); font-family: var(--mono); margin: 0; word-break: break-all; }
+
+/* 高级抽屉里的分段：位置设置 / 运行日志 / 关于 */
+.drawer-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.drawer-section:last-child { border-bottom: 0; padding-bottom: 0; }
+
+.drawer-section h4 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.drawer-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+/* 抽屉里的说明改成描边小块，不再是卡片式的整条横幅 */
+.drawer-section .hint {
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  line-height: 1.55;
+}
+
+.drawer-section .joblog.tall {
+  flex: none;
+  min-height: 180px;
+  max-height: 320px;
+}
 
 /* ---------- 覆盖层 / 弹窗 ---------- */
 

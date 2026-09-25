@@ -159,11 +159,11 @@ def resolve_paths(state):
     if source != 'none':
         hint = ''
     elif info['error']:
-        hint = '配置文件无法解析，请在「设置」中修正后保存'
+        hint = '配置文件无法解析，请在「高级」中修正后保存'
     elif not info['exists']:
-        hint = '尚未创建配置文件，请在「设置」中点击「自动检测」或手动填写路径'
+        hint = '还没设置 Wallpaper Engine 的位置，请点「高级」→「自动检测」'
     else:
-        hint = '配置文件中的路径为空，请在「设置」中填写路径'
+        hint = '配置里的位置是空的，请到「高级」里填写'
 
     return {
         'json_path': json_path,
@@ -206,9 +206,11 @@ def _scan_worker(state, job):
     with state.lock:
         state.last_scan = result
 
+    unknown = len(result['unknown'])
     emit(
         result['total_folders'], result['total_folders'],
-        f"扫描完成：待清理 {len(result['orphans'])} 个，未知目录 {len(result['unknown'])} 个",
+        f"扫描完成：待清理 {len(result['orphans'])} 个"
+        + (f"，其中 {unknown} 个无法确定" if unknown else ''),
         'info',
     )
     core.logger.info(

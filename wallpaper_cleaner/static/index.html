@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Wallpaper Cleaner 管理面板</title>
+<title>Wallpaper Cleaner 壁纸清理</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -13,13 +13,12 @@
     <span class="logo" aria-hidden="true"></span>
     <div class="brand-text">
       <h1>Wallpaper Cleaner</h1>
-      <p class="sub" id="config-line">正在载入…</p>
+      <p class="sub" id="config-line">正在检查…</p>
     </div>
   </div>
   <div class="actions">
     <button class="btn" id="btn-scan">重新扫描</button>
-    <button class="btn ghost" id="btn-settings">设置</button>
-    <button class="btn ghost" id="btn-logs">日志</button>
+    <button class="btn ghost" id="btn-advanced">高级</button>
   </div>
 </header>
 
@@ -53,13 +52,13 @@
     <div class="card-head">
       <h2>待清理 <span class="count" id="orphan-count">0</span></h2>
       <div class="card-tools">
-        <label class="chk"><input type="checkbox" id="check-all"> 全选孤儿目录</label>
-        <button class="btn danger" id="btn-delete" disabled>删除选中</button>
+        <label class="chk"><input type="checkbox" id="check-all"> 全选已取消订阅</label>
+        <button class="btn danger" id="btn-delete" disabled>清理选中</button>
       </div>
     </div>
     <p class="hint">
-      只删除未出现在 <code>workshopcache.json</code> 订阅列表中的目录，已订阅的壁纸不会被触碰。
-      标记为 <span class="badge unknown">未知目录</span> 的并非纯数字目录名，来源不明，需要逐个手动勾选。
+      只清理已取消订阅的壁纸残留，正在使用的壁纸不会被触碰。
+      标记为 <span class="badge unknown">无法确定的文件夹</span> 的来源不明，默认不勾选，需要时请手动勾选。
     </p>
     <div class="tablewrap" id="orphan-wrap">
       <table>
@@ -100,10 +99,6 @@
       <div class="empty hidden" id="sub-empty"></div>
     </div>
   </section>
-
-  <footer class="foot">
-    <span>wallpaper-cleaner <span id="version">—</span> · 面板仅监听本机回环地址</span>
-  </footer>
 </main>
 
 <!-- 任务进度 -->
@@ -116,12 +111,12 @@
   </div>
 </div>
 
-<!-- 删除确认 -->
+<!-- 清理确认 -->
 <div class="overlay hidden" id="confirm-overlay">
   <div class="dialog">
-    <h3>确认删除</h3>
+    <h3>确认清理</h3>
     <p class="dialog-lead">
-      即将删除 <strong id="confirm-count">0</strong> 个目录，释放约
+      即将清理 <strong id="confirm-count">0</strong> 个文件夹，释放约
       <strong id="confirm-size">0 B</strong>：
     </p>
     <ul class="confirm-list" id="confirm-list"></ul>
@@ -134,52 +129,58 @@
     </p>
     <div class="dialog-actions">
       <button class="btn ghost" id="btn-cancel-delete">取消</button>
-      <button class="btn danger" id="btn-confirm-delete">确认删除</button>
+      <button class="btn danger" id="btn-confirm-delete">确认清理</button>
     </div>
   </div>
 </div>
 
-<!-- 设置抽屉 -->
-<aside class="drawer hidden" id="settings-drawer">
+<!-- 高级：位置设置 / 运行日志 / 关于 -->
+<aside class="drawer wide hidden" id="advanced-drawer">
   <header class="drawer-head">
-    <h3>设置</h3>
-    <button class="icon-btn" data-close="settings-drawer" aria-label="关闭">✕</button>
+    <h3>高级</h3>
+    <button class="icon-btn" data-close="advanced-drawer" aria-label="关闭">✕</button>
   </header>
   <div class="drawer-body">
-    <label class="field">
-      <span>workshopcache.json 路径</span>
-      <input type="text" id="input-json" spellcheck="false" autocomplete="off"
-             placeholder="D:\Steam\steamapps\common\wallpaper_engine\bin\workshopcache.json">
-    </label>
-    <label class="field">
-      <span>workshop 内容目录</span>
-      <input type="text" id="input-workshop" spellcheck="false" autocomplete="off"
-             placeholder="D:\Steam\steamapps\workshop\content\431960">
-    </label>
-    <p class="hint">
-      支持绝对路径与相对路径（相对路径基于项目根目录）。保存时会保留配置文件中的注释。
-    </p>
-    <div class="drawer-actions">
-      <button class="btn ghost" id="btn-autodetect">自动检测</button>
-      <button class="btn" id="btn-save-config">保存</button>
-    </div>
-    <div class="notice hidden" id="autodetect-result"></div>
-    <p class="meta" id="settings-meta"></p>
-  </div>
-</aside>
 
-<!-- 日志抽屉 -->
-<aside class="drawer wide hidden" id="logs-drawer">
-  <header class="drawer-head">
-    <h3>运行日志</h3>
-    <div class="drawer-head-actions">
-      <label class="chk"><input type="checkbox" id="opt-log-auto" checked> 自动刷新</label>
-      <button class="icon-btn" data-close="logs-drawer" aria-label="关闭">✕</button>
-    </div>
-  </header>
-  <div class="drawer-body">
-    <p class="meta" id="logs-meta">—</p>
-    <pre class="joblog tall" id="logs-body">载入中…</pre>
+    <section class="drawer-section">
+      <h4>位置设置</h4>
+      <label class="field">
+        <span>workshopcache.json 路径</span>
+        <input type="text" id="input-json" spellcheck="false" autocomplete="off"
+               placeholder="D:\Steam\steamapps\common\wallpaper_engine\bin\workshopcache.json">
+      </label>
+      <label class="field">
+        <span>workshop 内容目录</span>
+        <input type="text" id="input-workshop" spellcheck="false" autocomplete="off"
+               placeholder="D:\Steam\steamapps\workshop\content\431960">
+      </label>
+      <p class="hint">
+        支持绝对路径与相对路径（相对路径基于配置所在目录）。保存时会保留配置文件中的注释。
+      </p>
+      <div class="drawer-actions">
+        <button class="btn ghost" id="btn-autodetect">自动检测</button>
+        <button class="btn" id="btn-save-config">保存</button>
+      </div>
+      <div class="notice hidden" id="autodetect-result"></div>
+      <p class="meta" id="settings-meta"></p>
+    </section>
+
+    <section class="drawer-section">
+      <div class="drawer-section-head">
+        <h4>运行日志</h4>
+        <label class="chk"><input type="checkbox" id="opt-log-auto" checked> 自动刷新</label>
+      </div>
+      <p class="meta" id="logs-meta">—</p>
+      <pre class="joblog tall" id="logs-body">载入中…</pre>
+    </section>
+
+    <section class="drawer-section">
+      <h4>关于</h4>
+      <p class="meta" id="about-version">—</p>
+      <p class="meta" id="about-config">—</p>
+      <p class="meta" id="about-logs">—</p>
+    </section>
+
   </div>
 </aside>
 
