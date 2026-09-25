@@ -77,8 +77,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # 正文取 tag 说明，tag 页与 Release 页保持一致。
+          # 走文件而不是 --notes "$notes"：长文本带换行经 MSYS 传参会踩路径转换的坑。
+          git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > RELEASE_NOTES.md
           gh release create "$GITHUB_REF_NAME" \
             dist/wallpaper-cleaner.exe \
             dist/SHA256SUMS.txt \
             --title "wallpaper-cleaner $GITHUB_REF_NAME" \
-            --generate-notes
+            --notes-file RELEASE_NOTES.md
