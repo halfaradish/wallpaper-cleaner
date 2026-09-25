@@ -23,7 +23,24 @@ from urllib.parse import urlparse, parse_qs
 from . import core
 from . import __version__
 
-STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static')
+def _find_static_dir():
+    """定位面板静态资源目录
+
+    打包后这些文件被 PyInstaller 解压到 sys._MEIPASS 下，不再位于 __file__ 旁边，
+    所以除了常规位置还要在打包目录里兜底找一遍。
+    """
+    candidates = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static'),
+        os.path.join(core.bundle_dir(), 'wallpaper_cleaner', 'static'),
+        os.path.join(core.bundle_dir(), 'static'),
+    ]
+    for path in candidates:
+        if os.path.isdir(path):
+            return path
+    return candidates[0]
+
+
+STATIC_DIR = _find_static_dir()
 STATIC_FILES = ('index.html', 'app.js', 'style.css')
 CONTENT_TYPES = {
     '.html': 'text/html; charset=utf-8',
@@ -543,7 +560,13 @@ class PanelServer(ThreadingMixIn, HTTPServer):
 
 
 def _bind(host, port, state, attempts=20):
-    """绑定端口，被占用时向后递增；全部失败抛 OSError"""
+    """绑定端口，被占用时向后递增；全部失败抛 OSError
+
+    port 为 0 表示交给系统分配一个空闲端口（桌面窗口模式用，彻底避免端口冲突）。
+    """
+    if port == 0:
+        return PanelServer((host, 0), PanelHandler, state)
+
     last_error = None
     for offset in range(attempts):
         candidate = port + offset
@@ -558,23 +581,39 @@ def _bind(host, port, state, attempts=20):
     raise OSError(f'端口 {port}-{port + attempts - 1} 都不可用: {last_error}')
 
 
+def server_url(server):
+    """服务器的访问地址；绑定在通配地址时给出本机可用的 127.0.0.1"""
+    host, port = server.server_address[0], server.server_address[1]
+    display_host = '127.0.0.1' if host in ('0.0.0.0', '::', '') else host
+    return f'http://{display_host}:{port}/'
+
+
+def create_server(host='127.0.0.1', port=8787, state=None):
+    """创建并绑定面板服务器（尚未开始监听），返回 (server, state)
+
+    浏览器模式与桌面窗口模式共用这一份，避免两处实现行为漂移。
+    """
+    core.setup_logger()
+    if state is None:
+        state = PanelState()
+        try:
+            state.autodetect = core.auto_detect_paths()
+        except Exception:
+            state.autodetect = (None, None)
+    return _bind(host, port, state), state
+
+
 def run(host='127.0.0.1', port=8787, open_browser=True):
     logger = core.setup_logger()
-    state = PanelState()
-    try:
-        state.autodetect = core.auto_detect_paths()
-    except Exception:
-        state.autodetect = (None, None)
 
     try:
-        server = _bind(host, port, state)
+        server, _state = create_server(host, port)
     except OSError as e:
         logger.error(str(e))
         return 1
 
-    actual_host, actual_port = server.server_address[0], server.server_address[1]
-    display_host = '127.0.0.1' if actual_host in ('0.0.0.0', '::', '') else actual_host
-    url = f'http://{display_host}:{actual_port}/'
+    actual_host = server.server_address[0]
+    url = server_url(server)
 
     config_file, is_legacy = core.find_config_file()
     logger.info('=' * 60)

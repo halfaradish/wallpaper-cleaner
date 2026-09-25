@@ -16,10 +16,56 @@ from logging.handlers import RotatingFileHandler
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# 项目根目录（本包所在目录的上一级），配置文件与 logs/ 都位于此
+# 本包所在目录（打包后位于 PyInstaller 解压出的临时目录里）
 PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
-script_dir = os.path.dirname(PACKAGE_DIR)
 
+
+def is_frozen():
+    """是否运行在打包出的可执行文件里"""
+    return bool(getattr(sys, 'frozen', False))
+
+
+def bundle_dir():
+    """打包运行时数据文件的根目录（static 等被打包资源都在这里）"""
+    return getattr(sys, '_MEIPASS', PACKAGE_DIR)
+
+
+def app_home_dir():
+    """配置与日志的存放目录
+
+    - 源码运行：项目根目录，与旧版一致
+    - 打包运行：%APPDATA%\\wallpaper-cleaner。不能用 exe 所在目录（可能被放进
+      Program Files 而不可写），也不能用解压目录（单文件模式随进程消失）
+    - 可用 WALLPAPER_CLEANER_HOME 环境变量覆盖，便于测试与便携部署
+    """
+    override = os.environ.get('WALLPAPER_CLEANER_HOME')
+    if override:
+        return os.path.abspath(override)
+    if is_frozen():
+        base = os.environ.get('APPDATA') or os.path.expanduser('~')
+        return os.path.join(base, 'wallpaper-cleaner')
+    return os.path.dirname(PACKAGE_DIR)
+
+
+def has_console():
+    """是否存在可用的控制台
+
+    打包成 --noconsole 的 exe 后 sys.stdout / sys.stderr 都是 None，
+    此时不能注册 logging.StreamHandler，否则每次写日志都会抛错。
+    """
+    return sys.stdout is not None and sys.stderr is not None
+
+
+def ensure_dir(path):
+    """尽力创建目录，失败时留给后续的写入操作去报错"""
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError:
+        pass
+
+
+# 配置与日志都放在 app_home_dir 下
+script_dir = app_home_dir()
 config_path = os.path.join(script_dir, 'config.yml')
 legacy_config_path = os.path.join(script_dir, 'config.json')
 log_dir = os.path.join(script_dir, 'logs')
@@ -46,7 +92,7 @@ class ScanError(Exception):
 
 
 def setup_logger():
-    """初始化日志：控制台 INFO + 文件 DEBUG（单文件 5MB，保留 5 个备份）
+    """初始化日志：控制台 INFO（有控制台时）+ 文件 DEBUG（单文件 5MB，保留 5 个备份）
 
     重复调用安全（CLI 与面板可能都会触发）。
     """
@@ -54,7 +100,7 @@ def setup_logger():
     if _logger_ready:
         return logger
 
-    os.makedirs(log_dir, exist_ok=True)
+    ensure_dir(log_dir)
 
     logger.setLevel(logging.DEBUG)
 
@@ -65,17 +111,21 @@ def setup_logger():
     except Exception:
         pass
 
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    console_fmt = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-    console_handler.setFormatter(console_fmt)
-    logger.addHandler(console_handler)
+    # 打包成 --noconsole 的 exe 时没有控制台，此时注册 StreamHandler
+    # 会让每次写日志都抛错（sys.stderr 是 None），必须跳过
+    if has_console():
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        console_fmt = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+        console_handler.setFormatter(console_fmt)
+        logger.addHandler(console_handler)
 
     file_handler = RotatingFileHandler(
         current_log_path(), maxBytes=5 * 1024 * 1024, backupCount=5, encoding='utf-8'
     )
     file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(console_fmt)
+    file_fmt = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    file_handler.setFormatter(file_fmt)
     logger.addHandler(file_handler)
 
     _logger_ready = True
@@ -270,6 +320,7 @@ def read_config_file(path):
 
 def write_default_config():
     """生成带注释说明的默认配置文件，返回写入路径"""
+    ensure_dir(script_dir)
     try:
         with open(config_path, 'w', encoding='utf-8') as f:
             f.write(DEFAULT_CONFIG_TEMPLATE)
@@ -369,6 +420,7 @@ def _format_config_value(value):
 
 def _atomic_write(path, text):
     """先写临时文件再原子替换，避免写入中断损坏配置"""
+    ensure_dir(os.path.dirname(path))
     tmp = path + '.tmp'
     try:
         with open(tmp, 'w', encoding='utf-8', newline='') as f:
