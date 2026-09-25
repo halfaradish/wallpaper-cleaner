@@ -1,0 +1,79 @@
+name: Release
+
+# 推送 v* 标签时自动构建并发布到 GitHub Release；
+# 手动触发只构建并上传 artifact，方便先验证能不能打包成功。
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 安装打包依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller -r requirements-desktop.txt
+
+      - name: 运行单元测试
+        run: python -m unittest discover -s tests -t . -v
+
+      - name: 校验标签与版本号一致
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          code_version="v$(python -c 'import wallpaper_cleaner; print(wallpaper_cleaner.__version__)')"
+          if [ "$code_version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::标签 $GITHUB_REF_NAME 与 wallpaper_cleaner/__init__.py 里的版本号 $code_version 不一致，请先把版本号改成 ${GITHUB_REF_NAME#v}"
+            exit 1
+          fi
+          echo "版本号校验通过：$code_version"
+
+      - name: 打包 exe
+        run: python packaging/build.py --skip-deps --skip-tests --skip-smoke
+
+      - name: 冒烟测试
+        run: python packaging/smoke_test.py dist/wallpaper-cleaner.exe
+
+      - name: 生成校验和
+        shell: bash
+        run: |
+          cd dist
+          sha256sum wallpaper-cleaner.exe > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: wallpaper-cleaner-windows
+          path: |
+            dist/wallpaper-cleaner.exe
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+
+      - name: 发布到 Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/wallpaper-cleaner.exe \
+            dist/SHA256SUMS.txt \
+            --title "wallpaper-cleaner $GITHUB_REF_NAME" \
+            --generate-notes
+
+      # 想给 exe 做代码签名的话在这里加一步（需要准备证书，放在 secrets 里），
+      # 签完名再执行上面的发布步骤。未签名的 exe 用户首次运行会遇到 SmartScreen 提示。
