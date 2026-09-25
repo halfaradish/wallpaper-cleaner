@@ -62,7 +62,7 @@ def write_version_file():
     StringFileInfo([
       StringTable('080404b0', [
         StringStruct('CompanyName', 'wallpaper-cleaner'),
-        StringStruct('FileDescription', '清理 Wallpaper Engine 中已取消订阅的壁纸残留'),
+        StringStruct('FileDescription', 'Wallpaper Cleaner'),
         StringStruct('FileVersion', '{VERSION}'),
         StringStruct('InternalName', 'wallpaper-cleaner'),
         StringStruct('OriginalFilename', 'wallpaper-cleaner.exe'),

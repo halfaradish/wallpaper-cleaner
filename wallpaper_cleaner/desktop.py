@@ -11,7 +11,7 @@ import threading
 
 from . import core, web
 
-WINDOW_TITLE = 'Wallpaper Cleaner 壁纸清理'
+WINDOW_TITLE = 'Wallpaper Cleaner'
 MUTEX_NAME = 'Local\\wallpaper-cleaner-desktop'
 
 ERROR_ALREADY_EXISTS = 183
