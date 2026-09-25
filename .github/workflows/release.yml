@@ -78,8 +78,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           # 正文取 tag 说明，tag 页与 Release 页保持一致。
-          # 走文件而不是 --notes "$notes"：长文本带换行经 MSYS 传参会踩路径转换的坑。
+          # actions/checkout 的浅克隆只把 tag 指向的 commit 存进 refs/tags/，
+          # 此时 %(contents) 会退化成 commit message（v0.2.0 就这么翻车过一次，
+          # Release 正文变成了 commit subject），所以先按完整 refspec 把 tag 对象抓回来。
+          git fetch --quiet --force origin "+refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          if [ "$(git cat-file -t "refs/tags/$GITHUB_REF_NAME")" != tag ]; then
+            echo "::error::refs/tags/$GITHUB_REF_NAME 不是 tag 对象，读不到 tag 说明，发布已中止"
+            exit 1
+          fi
           git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > RELEASE_NOTES.md
+          # 走文件而不是 --notes "$notes"：长文本带换行经 MSYS 传参会踩路径转换的坑。
           gh release create "$GITHUB_REF_NAME" \
             dist/wallpaper-cleaner.exe \
             dist/SHA256SUMS.txt \
