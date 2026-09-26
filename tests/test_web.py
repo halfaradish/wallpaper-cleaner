@@ -11,8 +11,11 @@ import shutil
 import stat
 import sys
 import tempfile
+import threading
 import time
 import unittest
+import urllib.error
+import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -305,6 +308,147 @@ class TestEmptyCacheHandling(DeleteGuardTestCase):
         with self.assertRaises(core.ScanError):
             self.run_delete(scan, items)
         self.assertTrue(os.path.isdir(folder))
+
+
+class ThumbEndpointTestCase(DeleteGuardTestCase):
+    """缩略图接口：真的起一个 HTTP 服务，用请求验证响应内容与安全校验"""
+
+    PNG_BYTES = b'\x89PNG\r\n\x1a\n' + b'x' * 64
+
+    def setUp(self):
+        super().setUp()
+        self.state = web.PanelState()
+        # 不用 web.create_server：它会初始化全局日志，把日志文件钉在沙箱里，
+        # 沙箱一删后面的日志写入就会失败。这里只要一个绑好端口的服务器。
+        self.server = web.PanelServer(('127.0.0.1', 0), web.PanelHandler, self.state)
+        self.port = self.server.server_address[1]
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+        super().tearDown()
+
+    # --- 沙箱辅助 ---
+
+    def make_preview_folder(self, wid, preview_name='preview.png', declared=''):
+        folder = self.make_folder(wid)
+        with open(os.path.join(folder, preview_name), 'wb') as f:
+            f.write(self.PNG_BYTES)
+        if declared:
+            with open(os.path.join(folder, 'project.json'), 'w', encoding='utf-8') as f:
+                json.dump({'title': f'壁纸 {wid}', 'type': 'scene', 'preview': declared}, f)
+        return folder
+
+    def scan_now(self):
+        """按"扫描那一刻"的状态跑一次真扫描，并把它放进面板状态（接口只认这份结果）"""
+        context = core.load_subscription_context(self.json_path, self.workshop_dir)
+        scan = core.scan(
+            self.workshop_dir, context['subscriptions'], json_path=self.json_path,
+            extra_subscribed=context['protected'], extra_sizes=context['installed_sizes'],
+        )
+        with self.state.lock:
+            self.state.last_scan = scan
+        return scan
+
+    def get(self, path, headers=None):
+        """返回 (状态码, 响应头, 正文)；4xx 也当正常结果返回，方便断言"""
+        request = urllib.request.Request(
+            f'http://127.0.0.1:{self.port}{path}', headers=headers or {})
+        try:
+            with urllib.request.urlopen(request, timeout=5) as res:
+                return res.status, res.headers, res.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.headers, e.read()
+
+
+class TestThumbEndpoint(ThumbEndpointTestCase):
+    def test_serves_the_folders_own_preview(self):
+        self.make_preview_folder('3333333333')
+        self.scan_now()
+
+        status, headers, body = self.get('/api/thumb?wid=3333333333')
+
+        self.assertEqual(status, 200)
+        self.assertEqual(headers['Content-Type'], 'image/png')
+        self.assertEqual(headers['X-Content-Type-Options'], 'nosniff')
+        self.assertEqual(body, self.PNG_BYTES)
+
+    def test_gif_preview_keeps_its_type(self):
+        """动图按原样发出去，播放交给浏览器"""
+        self.make_preview_folder('3333333333', preview_name='preview.gif', declared='preview.gif')
+        self.scan_now()
+
+        status, headers, body = self.get('/api/thumb?wid=3333333333')
+
+        self.assertEqual(status, 200)
+        self.assertEqual(headers['Content-Type'], 'image/gif')
+        self.assertEqual(body, self.PNG_BYTES)
+
+    def test_unknown_wid_is_not_served(self):
+        self.make_preview_folder('3333333333')
+        self.scan_now()
+
+        status, _headers, body = self.get('/api/thumb?wid=9999999999')
+
+        self.assertEqual(status, 404)
+        self.assertIn('最近一次扫描', body.decode('utf-8'))
+
+    def test_item_without_preview_is_not_served(self):
+        self.make_folder('3333333333')  # 只有 data.bin，没有预览图
+        self.scan_now()
+
+        status, _headers, _body = self.get('/api/thumb?wid=3333333333')
+
+        self.assertEqual(status, 404)
+
+    def test_path_traversal_wid_is_rejected(self):
+        """指向真实存在的沙箱文件的越界 ID：接口只认扫描结果，不认请求里的路径"""
+        self.make_preview_folder('3333333333')
+        self.scan_now()
+
+        # 从 workshop 目录往上四级正好是沙箱根，workshopcache.json 就躺在那里
+        status, headers, body = self.get(
+            '/api/thumb?wid=..%2F..%2F..%2F..%2Fworkshopcache.json')
+
+        self.assertEqual(status, 404)
+        self.assertEqual(headers['Content-Type'], 'application/json; charset=utf-8')
+        self.assertNotIn(b'wallpapers', body)
+
+    def test_request_before_any_scan_is_not_served(self):
+        self.make_preview_folder('3333333333')
+
+        status, _headers, _body = self.get('/api/thumb?wid=3333333333')
+
+        self.assertEqual(status, 404)
+
+    def test_etag_makes_the_second_request_cheap(self):
+        """列表每次重绘都会重建 <img>，有缓存才不用把图重拉一遍"""
+        self.make_preview_folder('3333333333')
+        self.scan_now()
+
+        _status, headers, _body = self.get('/api/thumb?wid=3333333333')
+        etag = headers['ETag']
+        self.assertTrue(etag)
+        self.assertIn('max-age', headers['Cache-Control'])
+
+        status, _headers, body = self.get(
+            '/api/thumb?wid=3333333333', headers={'If-None-Match': etag})
+
+        self.assertEqual(status, 304)
+        self.assertEqual(body, b'')
+
+    def test_stale_preview_is_dropped_after_the_file_is_replaced(self):
+        """扫描之后文件被删掉，接口不该再去读那个路径"""
+        folder = self.make_preview_folder('3333333333')
+        self.scan_now()
+        os.remove(os.path.join(folder, 'preview.png'))
+
+        status, _headers, _body = self.get('/api/thumb?wid=3333333333')
+
+        self.assertEqual(status, 404)
 
 
 if __name__ == '__main__':

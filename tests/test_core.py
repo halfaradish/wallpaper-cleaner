@@ -597,26 +597,102 @@ class TestProjectMeta(SandboxTestCase):
         folder = self.make_folder(json.dumps({'title': '神里绫华-X-Ray-ほうき星', 'type': 'scene'}))
         self.assertEqual(
             core.read_project_meta(folder),
-            {'title': '神里绫华-X-Ray-ほうき星', 'type': 'scene'},
+            {'title': '神里绫华-X-Ray-ほうき星', 'type': 'scene', 'preview': ''},
         )
 
+    def test_reads_declared_preview(self):
+        folder = self.make_folder(
+            json.dumps({'title': 'x', 'type': 'scene', 'preview': 'preview.gif'}))
+        self.assertEqual(core.read_project_meta(folder)['preview'], 'preview.gif')
+
     def test_missing_file_returns_empty(self):
-        self.assertEqual(core.read_project_meta(self.make_folder()), {'title': '', 'type': ''})
+        self.assertEqual(
+            core.read_project_meta(self.make_folder()),
+            {'title': '', 'type': '', 'preview': ''},
+        )
 
     def test_broken_json_returns_empty(self):
         self.assertEqual(
-            core.read_project_meta(self.make_folder('{ not json')), {'title': '', 'type': ''}
+            core.read_project_meta(self.make_folder('{ not json')),
+            {'title': '', 'type': '', 'preview': ''},
         )
 
     def test_non_dict_json_returns_empty(self):
-        self.assertEqual(core.read_project_meta(self.make_folder('[1, 2]')), {'title': '', 'type': ''})
+        self.assertEqual(
+            core.read_project_meta(self.make_folder('[1, 2]')),
+            {'title': '', 'type': '', 'preview': ''},
+        )
 
     def test_oversized_file_is_skipped(self):
         folder = self.make_folder()
         path = os.path.join(folder, 'project.json')
         with open(path, 'w', encoding='utf-8') as f:
             f.write('x' * (core.PROJECT_JSON_MAX_BYTES + 1))
-        self.assertEqual(core.read_project_meta(folder), {'title': '', 'type': ''})
+        self.assertEqual(
+            core.read_project_meta(folder), {'title': '', 'type': '', 'preview': ''}
+        )
+
+
+class TestPreview(SandboxTestCase):
+    """预览图：优先用作者在 project.json 里声明的那个，声明的不可信时按固定候选名找"""
+
+    def make_folder(self, files=(), declared=''):
+        folder = os.path.join(self.tmp, 'wp')
+        os.makedirs(folder, exist_ok=True)
+        if declared:
+            self.write(
+                os.path.join(folder, 'project.json'),
+                json.dumps({'title': 'x', 'type': 'scene', 'preview': declared}),
+            )
+        for name in files:
+            self.write(os.path.join(folder, name), 'image-bytes')
+        return folder
+
+    def test_declared_preview_wins(self):
+        folder = self.make_folder(['preview.jpg', 'preview.gif'], declared='preview.gif')
+        self.assertEqual(core.find_preview(folder, 'preview.gif'), 'preview.gif')
+
+    def test_falls_back_to_static_before_gif(self):
+        """作者没声明时静态图排在 GIF 前面，免得一屏壁纸全在播动画"""
+        folder = self.make_folder(['preview.gif', 'preview.png'])
+        self.assertEqual(core.find_preview(folder), 'preview.png')
+
+    def test_declared_path_traversal_is_rejected(self):
+        folder = self.make_folder(['preview.jpg'], declared='../../config.json')
+        self.assertEqual(core.find_preview(folder, '../../config.json'), 'preview.jpg')
+
+    def test_declared_subdir_is_rejected(self):
+        folder = self.make_folder(['preview.jpg'], declared='sub/preview.png')
+        self.assertEqual(core.find_preview(folder, 'sub/preview.png'), 'preview.jpg')
+
+    def test_declared_non_image_is_rejected(self):
+        folder = self.make_folder(['preview.jpg'], declared='video.mp4')
+        self.assertEqual(core.find_preview(folder, 'video.mp4'), 'preview.jpg')
+
+    def test_declared_file_missing_falls_back(self):
+        folder = self.make_folder(['preview.png'], declared='preview.gif')
+        self.assertEqual(core.find_preview(folder, 'preview.gif'), 'preview.png')
+
+    def test_no_preview_at_all(self):
+        self.assertEqual(core.find_preview(self.make_folder(['scene.pkg'])), '')
+
+    def test_oversized_preview_is_ignored(self):
+        folder = self.make_folder()
+        with open(os.path.join(folder, 'preview.jpg'), 'wb') as f:
+            f.write(b'x' * (core.PREVIEW_MAX_BYTES + 1))
+        self.assertEqual(core.find_preview(folder), '')
+        self.assertEqual(core.resolve_preview_path(folder, 'preview.jpg'), '')
+
+    def test_file_outside_the_folder_is_rejected(self):
+        """扫描之后目录被换成指向外面的软链接，也不给读"""
+        folder = self.make_folder()
+        outside = os.path.join(self.tmp, 'outside.jpg')
+        self.write(outside, 'secret')
+        try:
+            os.symlink(outside, os.path.join(folder, 'preview.jpg'))
+        except (OSError, NotImplementedError, AttributeError):
+            self.skipTest('当前环境不允许创建符号链接')
+        self.assertEqual(core.resolve_preview_path(folder, 'preview.jpg'), '')
 
 
 class TestItemLabel(unittest.TestCase):
@@ -658,6 +734,32 @@ class TestScanDisplayFallback(SandboxTestCase):
         entry = [i for i in result['subscribed'] if i['wid'] == wid][0]
         self.assertEqual(entry['title'], '未知')
         self.assertEqual(entry['declared_size'], '未知')
+
+    def test_scan_reports_preview_file(self):
+        """三类条目都带上目录里找到的预览图文件名，前端据此决定显示图还是占位框"""
+        workshop_dir, json_path, subscriptions = self.make_workshop(
+            subscribed_ids=['1111111111'], orphans=['2222222222'], unknown=['my-wallpaper'])
+        for wid in ('1111111111', '2222222222', 'my-wallpaper'):
+            folder = os.path.join(workshop_dir, wid)
+            self.write(
+                os.path.join(folder, 'project.json'),
+                json.dumps({'title': f'壁纸 {wid}', 'type': 'scene', 'preview': 'preview.gif'}),
+            )
+            self.write(os.path.join(folder, 'preview.gif'), 'gif-bytes')
+
+        result = core.scan(workshop_dir, subscriptions, json_path=json_path)
+        by_wid = {i['wid']: i for i in
+                  result['subscribed'] + result['orphans'] + result['unknown']}
+        for wid in ('1111111111', '2222222222', 'my-wallpaper'):
+            self.assertEqual(by_wid[wid]['preview'], 'preview.gif')
+        # 缓存里有标题也照样读 project.json：类型和预览图都只有它写着
+        self.assertEqual(by_wid['1111111111']['title'], '壁纸 1111111111')
+        self.assertEqual(by_wid['1111111111']['wp_type'], 'scene')
+
+    def test_scan_without_preview_reports_empty(self):
+        workshop_dir, json_path, subscriptions = self.make_workshop(orphans=['2222222222'])
+        result = core.scan(workshop_dir, subscriptions, json_path=json_path)
+        self.assertEqual(result['orphans'][0]['preview'], '')
 
 
 class TestScanWithSteamRecord(SandboxTestCase):
