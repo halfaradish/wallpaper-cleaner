@@ -244,7 +244,7 @@ def _delete_worker(state, job, scan, items, recycle):
         emit(0, total, f"跳过 {core.item_label(item)}：该壁纸仍处于订阅状态", 'warn')
 
     # 目录刚被改动过说明可能还在下载，先放过这一轮；
-    # 但 Steam 记录可信且已写明内容装完时，就不是"正在下载"，不必再等
+    # 但内容记录里已写明装完时（Steam 记下了 manifest），就不是"正在下载"，不必再等
     complete = context['complete']
     grace_minutes = core.FRESH_DOWNLOAD_GRACE_SECONDS // 60
     fresh = [i for i in rest

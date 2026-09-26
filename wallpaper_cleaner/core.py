@@ -685,8 +685,9 @@ def load_subscription_context(json_path, workshop_dir):
     它比 WE 缓存更新时才被采信：更旧的 ACF 里那条 subscribedby 已经过期（刚取消订阅
     就是这个状态，Steam 还没重写文件），此时以缓存为准，否则残留会被一直当成已订阅。
 
-    complete = Steam 记录可信、且内容记录里有它的 ID —— 说明下载早已装完，
-    删除时不必再按"可能正在下载"等一轮。
+    complete = 内容记录里有的 ID，说明下载早已装完，删除时不必再按"可能正在下载"等一轮。
+    它只要求 ACF 读得到，不要求它比缓存新——"装完"是过去发生的事，不会因为 WE 重写了
+    缓存而失效（条目只在内容被删时才消失）。「谁更新就信谁」只适用于订阅记录。
     """
     subscriptions = load_subscriptions(json_path)
     steam = load_steam_record(steam_acf_path(workshop_dir))
@@ -707,7 +708,7 @@ def load_subscription_context(json_path, workshop_dir):
         'subscriptions': subscriptions,
         'protected': protected,
         'disputed': disputed,
-        'complete': set(steam['installed']) if steam_fresh else set(),
+        'complete': set(steam['installed']) if steam['ok'] else set(),
         'installed_sizes': installed_sizes(steam),
         'steam': steam,
         'cache_mtime': cache_mtime,
