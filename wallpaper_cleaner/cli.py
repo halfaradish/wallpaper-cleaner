@@ -65,17 +65,16 @@ def _resolve_paths():
     return config['json_path'], config['workshop_dir']
 
 
-def _preview(result, targets, held_back):
+def _preview(targets, held_back):
     """--dry-run 输出：列出将要删除的内容，以及被安全校验拦下的内容"""
     logger.info('')
     logger.info('=' * 60)
     logger.info('  预览模式：以下内容不会被删除')
     logger.info('=' * 60)
 
-    for item in result['orphans']:
-        logger.info(f'  待删除 {item["wid"]}  ({core.format_size(item["size_bytes"])})')
-    for item in result['unknown']:
-        logger.info(f'  待删除 {item["wid"]}  ({core.format_size(item["size_bytes"])})　[非数字目录]')
+    for item in targets:
+        note = '' if item['kind'] == 'orphan' else '　[非数字目录]'
+        logger.info(f'  待删除 {item["wid"]}  ({core.format_size(item["size_bytes"])}){note}')
     for wid, reason in held_back:
         logger.info(f'  保留 {wid}　[{reason}]')
 
@@ -92,23 +91,23 @@ def _hold_back(targets, workshop_dir, json_path):
     """删除前复核，返回 (可删除项, [(wid, 保留原因)])
 
     CLI 没有确认环节，一旦判断失误就是永久删除，所以这里做两道检查：
-    1) 重新读订阅缓存和 Steam 安装记录，仍处于订阅/已安装状态的一律不删；
-    2) 目录刚被改动过的（可能还在下载）先放过一轮。
+    1) 重新读订阅缓存和 Steam 订阅记录，仍处于订阅状态的一律不删；
+    2) 目录刚被改动过的（可能还在下载）先放过一轮——除非 Steam 记录可信且写明内容已装完。
     """
     try:
-        subscriptions = core.load_subscriptions(json_path)
+        context = core.load_subscription_context(json_path, workshop_dir)
     except core.SubscriptionError as e:
         logger.error(f'删除前复核订阅列表失败，已中止：{e}')
         sys.exit(1)
-    installed = core.load_steam_installed_ids(core.steam_acf_path(workshop_dir))
-    protected = set(subscriptions) | installed
+    protected = context['protected']
+    complete = context['complete']
 
     remaining, held = [], []
     for item in targets:
         wid = item['wid']
         if wid in protected:
-            held.append((wid, '仍处于订阅或已安装状态'))
-        elif core.is_freshly_downloaded(item.get('path') or ''):
+            held.append((wid, '仍处于订阅状态'))
+        elif wid not in complete and core.is_freshly_downloaded(item.get('path') or ''):
             held.append((wid, f'目录在 {core.FRESH_DOWNLOAD_GRACE_SECONDS // 60} 分钟内被改动过'))
         else:
             remaining.append(item)
@@ -122,27 +121,20 @@ def main(dry_run=False):
     json_path, workshop_dir = _resolve_paths()
 
     try:
-        subscriptions = core.load_subscriptions(json_path)
+        context = core.load_subscription_context(json_path, workshop_dir)
     except core.SubscriptionError as e:
         logger.error(str(e))
         sys.exit(1)
+    subscriptions = context['subscriptions']
     logger.info(f'已读取订阅缓存: {json_path}')
     logger.info(f'已订阅壁纸数量: {len(subscriptions)}')
-
-    # 第二个订阅来源：刚下载完的壁纸可能还没写进 WE 的缓存，但 Steam 已经记下安装记录
-    installed = core.load_steam_installed_ids(core.steam_acf_path(workshop_dir))
-    if installed:
-        pending = installed - set(subscriptions)
-        logger.info(
-            f'Steam 安装记录: {len(installed)} 条'
-            + (f'，其中 {len(pending)} 条还没进订阅缓存' if pending else '')
-        )
-    else:
-        logger.warning('读不到 Steam 安装记录，本次不做交叉核对（刚下载的壁纸可能被误判）')
+    for level, message in core.describe_steam_record(context):
+        getattr(logger, 'warning' if level == 'warn' else level)(message)
 
     try:
         result = core.scan(workshop_dir, subscriptions, json_path=json_path,
-                           extra_subscribed=installed)
+                           extra_subscribed=context['protected'],
+                           extra_sizes=context['installed_sizes'])
     except core.ScanError as e:
         logger.error(str(e))
         sys.exit(1)
@@ -162,7 +154,7 @@ def main(dry_run=False):
         logger.warning(f'跳过 {wid}：{reason}')
 
     if dry_run:
-        _preview(result, targets, held_back)
+        _preview(targets, held_back)
         return 0
 
     def _progress(_done, _total, message, level='info'):
