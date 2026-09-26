@@ -11,6 +11,7 @@ import re
 import shutil
 import stat
 import sys
+import time
 import logging
 from logging.handlers import RotatingFileHandler
 from datetime import datetime
@@ -511,9 +512,13 @@ def load_subscriptions(json_path):
         raise SubscriptionError(f'订阅缓存格式异常（顶层不是对象）: {json_path}')
 
     subscriptions = {}
-    wallpapers = data.get('wallpapers') or []
+    # 键缺失（而不是空数组）说明这个文件不是完整的 WE 缓存，多半正在被重写。
+    # 此时若当成"零订阅"，磁盘上所有目录都会被判成残留，必须报错而不是放行。
+    wallpapers = data.get('wallpapers')
     if not isinstance(wallpapers, list):
-        raise SubscriptionError(f'订阅缓存格式异常（wallpapers 不是数组）: {json_path}')
+        raise SubscriptionError(
+            f'订阅缓存里没有 wallpapers 数组，可能正在被 Wallpaper Engine 重写，请稍后重试: {json_path}'
+        )
 
     for wp in wallpapers:
         if not isinstance(wp, dict):
@@ -525,6 +530,103 @@ def load_subscriptions(json_path):
                 'size': wp.get('filesizelabel', '未知'),
             }
     return subscriptions
+
+
+def steam_acf_path(workshop_dir):
+    """由内容目录推导 Steam 的安装记录文件路径
+
+    workshop_dir 形如 <库>\\steamapps\\workshop\\content\\431960，
+    Steam 把已经装好的创意工坊内容记在 <库>\\steamapps\\workshop\\appworkshop_431960.acf。
+    目录结构不标准时推出来的路径会指向不存在的位置，读不到就跳过交叉核对。
+    """
+    if not workshop_dir:
+        return ''
+    normalized = os.path.normpath(workshop_dir)
+    appid = os.path.basename(normalized)
+    if not appid:
+        return ''
+    workshop_root = os.path.dirname(os.path.dirname(normalized))
+    return os.path.join(workshop_root, f'appworkshop_{appid}.acf')
+
+
+# ACF 里记录"已安装"的小节名（大小写不敏感）；后者是旧版 Steam 的拼写
+ACF_INSTALLED_SECTIONS = ('workshopitemsinstalled', 'wokshopitemsinstalled')
+
+# 匹配 VDF/KeyValues 的 token：带引号的字符串、花括号、裸词
+_vdf_token_re = re.compile(r'"((?:[^"\\]|\\.)*)"|([{}])|([^\s{}"]+)')
+
+
+def parse_acf_installed_ids(text):
+    """从 ACF（Valve KeyValues）文本里取出已安装的 workshop ID 集合
+
+    只读键名、不解析字段值：定位到 ACF_INSTALLED_SECTIONS 中的小节后，
+    把该小节下一级的子键当作物品 ID。文本被截断时返回已经解析到的部分，不抛异常。
+    """
+    ids = set()
+    stack = []
+    pending = None
+    for match in _vdf_token_re.finditer(text):
+        token = match.group(1)
+        if token is None:
+            token = match.group(3)
+        brace = match.group(2)
+        if brace == '{':
+            stack.append(pending or '')
+            if len(stack) == 3 and stack[1].lower() in ACF_INSTALLED_SECTIONS and stack[2]:
+                ids.add(stack[2])
+            pending = None
+        elif brace == '}':
+            if stack:
+                stack.pop()
+            pending = None
+        elif pending is None:
+            pending = token
+        else:
+            # 上一个 token 是键，这个就是它的值，成对消费掉
+            pending = None
+    return ids
+
+
+def load_steam_installed_ids(acf_path):
+    """读取 Steam 安装记录里的 workshop ID 集合，读不到就返回空集合
+
+    这份数据只用于"保护"（避免把已经装好的壁纸当残留），所以任何失败都只降级为
+    只信 workshopcache.json，绝不中断扫描。
+    """
+    if not acf_path or not os.path.isfile(acf_path):
+        return set()
+    try:
+        with open(acf_path, 'r', encoding='utf-8-sig', errors='replace') as f:
+            text = f.read()
+    except OSError as e:
+        logger.debug('读取 Steam 安装记录失败 (%s): %s', acf_path, e)
+        return set()
+
+    ids = parse_acf_installed_ids(text)
+    logger.debug('Steam 安装记录 %s: %d 条', acf_path, len(ids))
+    return ids
+
+
+# 目录在这么久之内被改动过就不参与删除，兜住"Steam 已建目录但还没写安装记录"的下载窗口。
+# 取 30 分钟是因为 WE 缓存的滞后可能长达几十分钟（实测有 37 分钟才刷新的），
+# 而误跳过只是让残留晚一轮清理，误删则要找回收站。
+FRESH_DOWNLOAD_GRACE_SECONDS = 1800
+
+
+def is_freshly_downloaded(path, grace_seconds=None):
+    """目录是否还在「刚下载」保护期内（按目录自身的修改时间判断）
+
+    Steam 下载时会不断往目录里写文件，所以正在下载的目录修改时间很新。
+    这只是兜底判断，主判据是 Steam 写好的安装记录；stat 失败返回 False，
+    让删除流程照常去报它自己的错误，而不是无限期保护下去。
+    """
+    grace = FRESH_DOWNLOAD_GRACE_SECONDS if grace_seconds is None else grace_seconds
+    if grace <= 0:
+        return False
+    try:
+        return (time.time() - os.path.getmtime(path)) < grace
+    except OSError:
+        return False
 
 
 def get_dir_size(path):
@@ -657,7 +759,8 @@ def _emit(on_progress, done, total, message, level='info'):
         on_progress(done, total, message, level)
 
 
-def scan(workshop_dir, subscriptions, json_path='', config_file='', on_progress=None, max_workers=8):
+def scan(workshop_dir, subscriptions, json_path='', config_file='', on_progress=None, max_workers=8,
+         extra_subscribed=None):
     """扫描 workshop 目录并按订阅状态分类，不删除任何内容
 
     分类规则：
@@ -665,24 +768,30 @@ def scan(workshop_dir, subscriptions, json_path='', config_file='', on_progress=
     - orphans:    纯数字目录名且未订阅（典型的取消订阅残留）
     - unknown:    非纯数字目录名且未订阅（来源不明，默认不勾选）
     - missing:    订阅列表中但磁盘上没有对应目录
+
+    extra_subscribed 是额外的「已订阅」来源（Steam 安装记录）。刚下载完的壁纸可能
+    还没写进 workshopcache.json，但 Steam 已经记下了安装记录，靠它避免误判成残留。
     """
     if not os.path.isdir(workshop_dir):
         raise ScanError(f'workshop目录不存在: {workshop_dir}')
+
+    extra = set(extra_subscribed or ())
 
     subscribed, orphans, unknown = [], [], []
     for name in os.listdir(workshop_dir):
         path = os.path.join(workshop_dir, name)
         if not os.path.isdir(path):
             continue
-        if name in subscriptions:
-            info = subscriptions[name]
+        if name in subscriptions or name in extra:
+            # 只在 Steam 安装记录里出现时没有标题和标注大小，保持与缓存缺失时一致
+            info = subscriptions.get(name) or {}
             subscribed.append({
                 'wid': name,
                 'path': path,
                 'size_bytes': 0,
                 'kind': 'subscribed',
-                'title': info.get('title', '未知'),
-                'declared_size': info.get('size', '未知'),
+                'title': info.get('title') or '未知',
+                'declared_size': info.get('size') or '未知',
             })
         elif name.isdigit():
             orphans.append({
@@ -715,7 +824,7 @@ def scan(workshop_dir, subscriptions, json_path='', config_file='', on_progress=
     subscribed.sort(key=lambda i: i['wid'])
 
     on_disk = {item['wid'] for item in targets}
-    missing = sorted(wid for wid in subscriptions if wid not in on_disk)
+    missing = sorted(wid for wid in set(subscriptions) | extra if wid not in on_disk)
 
     return {
         'json_path': json_path,
