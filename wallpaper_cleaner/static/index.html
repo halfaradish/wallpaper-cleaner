@@ -71,7 +71,13 @@
             <th>workshop ID</th>
             <th>标题</th>
             <th class="col-kind">类型</th>
-            <th class="col-size">占用空间</th>
+            <!-- 只有「占用大小」这一列是按钮，别的列头保持静态文字：整片表头都可点
+                 会让人以为点哪儿都能排序 -->
+            <th class="col-size" aria-sort="none">
+              <button type="button" class="sort-btn" id="sort-orphan" data-mode="default"
+                title="按占用大小排序：大到小 → 小到大 → 恢复默认">占用空间<span class="sort-icon"
+                aria-hidden="true"></span></button>
+            </th>
           </tr>
         </thead>
         <tbody id="orphan-body"></tbody>
@@ -95,7 +101,11 @@
               <th>workshop ID</th>
               <th>标题</th>
               <th class="col-size">标注大小</th>
-              <th class="col-size">实际占用</th>
+              <th class="col-size" aria-sort="none">
+                <button type="button" class="sort-btn" id="sort-sub" data-mode="default"
+                  title="按实际占用排序：大到小 → 小到大 → 恢复默认">实际占用<span class="sort-icon"
+                  aria-hidden="true"></span></button>
+              </th>
             </tr>
           </thead>
           <tbody id="sub-body"></tbody>

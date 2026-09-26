@@ -334,6 +334,40 @@ td.col-size { font-family: var(--mono); font-size: 12px; color: var(--text-dim);
 
 .title-link:hover { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
 
+/* 「占用大小」列头可点：三态循环排序（默认 → 大到小 → 小到大）。
+   只有这一列是按钮，别的列头保持静态文字——整片表头都可点会让人以为点哪儿都能排序。
+   padding 与负 margin 抵消：可点区域比文字大一圈，而列宽、表头行高与加排序之前一模一样。 */
+.sort-btn {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: -4px -6px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.sort-btn:hover { background: var(--surface-3); color: var(--text); }
+.sort-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* 默认态的 ⇅ 只表示「可以点」，不是方向指示；方向指示只在排序生效时出现 */
+.sort-icon { font-size: 10px; line-height: 1; opacity: 0.7; }
+.sort-icon::before { content: "⇅"; }
+.sort-btn[data-mode="desc"] .sort-icon::before { content: "▼"; }
+.sort-btn[data-mode="asc"] .sort-icon::before { content: "▲"; }
+
+.sort-btn[data-mode="desc"],
+.sort-btn[data-mode="asc"] { color: var(--text-dim); }
+.sort-btn[data-mode="desc"] .sort-icon,
+.sort-btn[data-mode="asc"] .sort-icon { color: var(--accent); opacity: 1; }
+
 /* 缩略图：96×54 是 16:9，正好是壁纸预览图的比例 */
 .col-thumb { width: 132px; padding-right: 0; }
 

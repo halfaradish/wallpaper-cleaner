@@ -13,6 +13,8 @@ const state = {
   selected: new Set(),
   subscribedOpen: false,
   subFilter: '',
+  sortOrphans: 'default',
+  sortSub: 'default',
   busy: false,
   jobTimer: null,
   logTimer: null,
@@ -213,10 +215,38 @@ function closeLightbox() {
   $('lightbox-img').removeAttribute('src');
 }
 
+/* ---------------- 列排序（占用大小） ---------------- */
+
+// 三态循环：默认 → 大到小 → 小到大 → 默认。默认态不干预后端顺序（待清理本来就是
+// 大到小、已订阅是 workshop ID 升序），也不显示方向指示，只留一个「这里可以点」的提示。
+// 状态放在 state 里而不是 DOM 上：重扫、清理完成、勾选引起的重绘都只读它，天然保持。
+const SORT_CYCLE = { default: 'desc', desc: 'asc', asc: 'default' };
+const SORT_ARIA = { default: 'none', desc: 'descending', asc: 'ascending' };
+
+function sortItems(items, mode) {
+  if (mode !== 'desc' && mode !== 'asc') return items;
+  const wantDesc = mode === 'desc';
+  return items.slice().sort((a, b) => {
+    // diff 是「a 比 b 大多少」：大到小就得让更大的排前面，返回负数把它顶到前面去
+    const diff = (Number(a.size_bytes) || 0) - (Number(b.size_bytes) || 0);
+    if (diff) return wantDesc ? -diff : diff;
+    // 体积相同用 ID 兜底，比较器才是全序：连点排序不会让两行互换位置
+    return a.wid < b.wid ? -1 : (a.wid > b.wid ? 1 : 0);
+  });
+}
+
+function toggleSort(id, mode) {
+  const next = SORT_CYCLE[mode] || 'desc';
+  const btn = $(id);
+  btn.dataset.mode = next;
+  btn.closest('th').setAttribute('aria-sort', SORT_ARIA[next]);
+  return next;
+}
+
 /* ---------------- 待清理列表 ---------------- */
 
 function renderOrphans() {
-  const items = cleanupItems();
+  const items = sortItems(cleanupItems(), state.sortOrphans);
   const body = $('orphan-body');
   const wrap = $('orphan-wrap');
   const empty = $('orphan-empty');
@@ -321,11 +351,13 @@ function renderSubscribed() {
 
   $('sub-count').textContent = String(scan.subscribed.length);
   const filter = state.subFilter.trim().toLowerCase();
-  const items = filter
+  const matched = filter
     ? scan.subscribed.filter((i) =>
         i.wid.toLowerCase().includes(filter) ||
         String(i.title || '').toLowerCase().includes(filter))
     : scan.subscribed;
+  // 先筛选后排序：排序作用于当前看得见的这些行
+  const items = sortItems(matched, state.sortSub);
 
   if (items.length === 0) {
     wrap.classList.add('hidden');
@@ -730,6 +762,17 @@ function bind() {
 
   $('sub-filter').addEventListener('input', (e) => {
     state.subFilter = e.target.value;
+    renderSubscribed();
+  });
+
+  // 两张表的「占用大小」列头各自三态循环，互不影响；只重画自己那张表
+  $('sort-orphan').addEventListener('click', () => {
+    state.sortOrphans = toggleSort('sort-orphan', state.sortOrphans);
+    renderOrphans();
+  });
+
+  $('sort-sub').addEventListener('click', () => {
+    state.sortSub = toggleSort('sort-sub', state.sortSub);
     renderSubscribed();
   });
 
