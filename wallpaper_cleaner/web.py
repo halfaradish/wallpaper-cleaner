@@ -195,12 +195,23 @@ def _scan_worker(state, job):
     subscriptions = core.load_subscriptions(paths['json_path'])
     emit(0, 0, f'已订阅壁纸数量: {len(subscriptions)}', 'info')
 
+    # Steam 的安装记录是第二个订阅来源：刚下载完的壁纸可能还没写进 WE 的缓存
+    acf_path = core.steam_acf_path(paths['workshop_dir'])
+    installed = core.load_steam_installed_ids(acf_path)
+    if installed:
+        pending = installed - set(subscriptions)
+        emit(0, 0, f'Steam 安装记录: {len(installed)} 条'
+                  + (f'，其中 {len(pending)} 条还没进订阅缓存' if pending else ''), 'debug')
+    else:
+        emit(0, 0, f'读不到 Steam 安装记录（{acf_path}），本次不做交叉核对', 'warn')
+
     result = core.scan(
         paths['workshop_dir'],
         subscriptions,
         json_path=paths['json_path'],
         config_file=paths['config_file'] or '',
         on_progress=emit,
+        extra_subscribed=installed,
     )
 
     with state.lock:
@@ -225,19 +236,31 @@ def _delete_worker(state, job, scan, items, recycle):
     total = len(items)
     emit(0, total, '正在复核订阅列表…', 'info')
 
-    # 扫描之后可能有人重新订阅了某些壁纸，删除前必须重新核对，避免删掉刚订阅的内容
+    # 扫描之后可能有人重新订阅了某些壁纸，删除前必须重新核对，避免删掉刚订阅的内容。
+    # Steam 的安装记录也要一起看：刚下载完的壁纸可能还没写进 WE 的订阅缓存。
     try:
         subscriptions = core.load_subscriptions(scan['json_path'])
     except core.SubscriptionError as e:
         raise core.ScanError(f'删除前复核订阅列表失败，已中止：{e}')
+    installed = core.load_steam_installed_ids(core.steam_acf_path(scan['workshop_dir']))
+    protected = set(subscriptions) | installed
 
-    revived = [i for i in items if i['wid'] in subscriptions]
-    targets = [i for i in items if i['wid'] not in subscriptions]
+    revived = [i for i in items if i['wid'] in protected]
+    rest = [i for i in items if i['wid'] not in protected]
     for item in revived:
-        emit(0, total, f"跳过 {item['wid']}：该壁纸在扫描后已被重新订阅", 'warn')
+        emit(0, total, f"跳过 {item['wid']}：该壁纸仍处于订阅或已安装状态", 'warn')
+
+    # 目录刚被改动过说明可能还在下载，先放过这一轮
+    grace_minutes = core.FRESH_DOWNLOAD_GRACE_SECONDS // 60
+    fresh = [i for i in rest if core.is_freshly_downloaded(i.get('path') or '')]
+    fresh_wids = {i['wid'] for i in fresh}
+    targets = [i for i in rest if i['wid'] not in fresh_wids]
+    for item in fresh:
+        emit(0, total, f"跳过 {item['wid']}：目录在 {grace_minutes} 分钟内被改动过，"
+                       '可能是正在下载的壁纸', 'warn')
 
     if not targets:
-        emit(0, total, '选中项都已重新订阅，无需删除', 'info')
+        emit(0, total, '选中项都仍处于订阅或刚下载状态，无需删除', 'info')
         outcome = {'deleted': [], 'failed': [], 'freed_bytes': 0}
     else:
         mode = '回收站' if recycle else '永久删除'
@@ -246,7 +269,7 @@ def _delete_worker(state, job, scan, items, recycle):
             targets, scan['workshop_dir'], to_recycle_bin=recycle, on_progress=emit
         )
 
-    outcome['skipped'] = [i['wid'] for i in revived]
+    outcome['skipped'] = [i['wid'] for i in revived + fresh]
     with state.lock:
         # 磁盘内容已变化，旧扫描结果作废，避免下一次删除基于过期列表
         state.last_scan = None

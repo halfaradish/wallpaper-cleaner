@@ -558,7 +558,7 @@ async function doDelete() {
     await loadState();
 
     let message = `已清理 ${deleted} 项，释放 ${fmtSize(result.freed_bytes || 0)}`;
-    if (skipped) message += `，跳过 ${skipped} 个（已重新订阅）`;
+    if (skipped) message += `，跳过 ${skipped} 个（仍处于订阅或刚下载状态）`;
     if (failed) message += `，失败 ${failed} 个`;
     toast(message, failed ? 'error' : 'ok');
   }, () => {
