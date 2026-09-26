@@ -9,11 +9,52 @@ import shutil
 import stat
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from wallpaper_cleaner import core
+
+
+# 仿真的 appworkshop_431960.acf：WorkshopItemsInstalled 里是已安装的，
+# WorkshopItemDetails 里还有一条没安装的（9999999999），它不该被当成已订阅
+ACF_SAMPLE = '''"AppWorkshop"
+{
+\t"appid"\t\t"431960"
+\t"SizeOnDisk"\t\t"2744644209"
+\t"WorkshopItemsInstalled"
+\t{
+\t\t"826336550"
+\t\t{
+\t\t\t"size"\t\t"2420536"
+\t\t\t"timeupdated"\t\t"1482753697"
+\t\t\t"manifest"\t\t"6751562254374569917"
+\t\t}
+\t\t"3115163440"
+\t\t{
+\t\t\t"size"\t\t"1536"
+\t\t\t"manifest"\t\t"1"
+\t\t}
+\t}
+\t"WorkshopItemDetails"
+\t{
+\t\t"826336550"
+\t\t{
+\t\t\t"manifest"\t\t"6751562254374569917"
+\t\t\t"timetouched"\t\t"1790413993"
+\t\t\t"subscribedby"\t\t"1508410657"
+\t\t}
+\t\t"9999999999"
+\t\t{
+\t\t\t"timetouched"\t\t"1790413993"
+\t\t\t"subscribedby"\t\t"1508410657"
+\t\t}
+\t}
+}
+'''
+
+ACF_INSTALLED_IDS = {'826336550', '3115163440'}
 
 
 def rmtree(path):
@@ -211,6 +252,18 @@ class TestSubscriptions(SandboxTestCase):
         with self.assertRaises(core.SubscriptionError):
             core.load_subscriptions(path)
 
+    def test_missing_wallpapers_key_raises(self):
+        """WE 正在重写缓存时不能把"没有 wallpapers 键"当成零订阅，否则所有目录都会变成残留"""
+        path = os.path.join(self.tmp, 'rewriting.json')
+        self.write(path, json.dumps({'user': 1, 'version': 2}))
+        with self.assertRaises(core.SubscriptionError):
+            core.load_subscriptions(path)
+
+    def test_empty_wallpapers_is_allowed(self):
+        path = os.path.join(self.tmp, 'empty.json')
+        self.write(path, json.dumps({'user': 1, 'version': 2, 'wallpapers': []}))
+        self.assertEqual(core.load_subscriptions(path), {})
+
     def test_entries_without_id_are_skipped(self):
         path = os.path.join(self.tmp, 'partial.json')
         self.write(path, json.dumps({'wallpapers': [
@@ -279,6 +332,114 @@ class TestScan(SandboxTestCase):
         self.assertTrue(events)
         # 回调签名 (done, total, message, level)，最后一个事件应当 done == total
         self.assertTrue(any(e[0] == e[1] and e[1] == 2 for e in events))
+
+
+class TestSteamAcf(SandboxTestCase):
+    def test_parses_installed_ids_only(self):
+        """只收 WorkshopItemsInstalled 的一级子键，字段名和 Details 条目都不算"""
+        self.assertEqual(core.parse_acf_installed_ids(ACF_SAMPLE), ACF_INSTALLED_IDS)
+
+    def test_legacy_misspelled_section(self):
+        """旧版 Steam 把这个小节拼成了 WokshopItemsInstalled"""
+        text = ACF_SAMPLE.replace('WorkshopItemsInstalled', 'WokshopItemsInstalled')
+        self.assertEqual(core.parse_acf_installed_ids(text), ACF_INSTALLED_IDS)
+
+    def test_derives_path_from_workshop_dir(self):
+        workshop_dir = os.path.join(self.tmp, 'steamapps', 'workshop', 'content', '431960')
+        self.assertEqual(
+            core.steam_acf_path(workshop_dir),
+            os.path.join(self.tmp, 'steamapps', 'workshop', 'appworkshop_431960.acf'),
+        )
+
+    def test_empty_path_returns_empty(self):
+        self.assertEqual(core.steam_acf_path(''), '')
+
+    def test_reads_file_with_bom_and_crlf(self):
+        workshop_dir = os.path.join(self.tmp, 'steamapps', 'workshop', 'content', '431960')
+        os.makedirs(workshop_dir)
+        acf_path = core.steam_acf_path(workshop_dir)
+        self.write(acf_path, '\ufeff' + ACF_SAMPLE.replace('\n', '\r\n'))
+        self.assertEqual(core.load_steam_installed_ids(acf_path), ACF_INSTALLED_IDS)
+
+    def test_missing_file_returns_empty_set(self):
+        self.assertEqual(core.load_steam_installed_ids(os.path.join(self.tmp, 'nope.acf')), set())
+        self.assertEqual(core.load_steam_installed_ids(''), set())
+
+    def test_truncated_file_does_not_raise(self):
+        """Steam 正在重写这个文件时读到的可能是半截内容，不能因此中断扫描"""
+        cut = ACF_SAMPLE[:ACF_SAMPLE.index('"3115163440"')]
+        self.assertEqual(core.parse_acf_installed_ids(cut), {'826336550'})
+
+        dangling = '"AppWorkshop"\n{\n\t"WorkshopItemsInstalled"\n\t{\n\t\t"111"\n\t\t{\n'
+        self.assertEqual(core.parse_acf_installed_ids(dangling), {'111'})
+
+    def test_garbage_returns_empty_set(self):
+        self.assertEqual(core.parse_acf_installed_ids('not a vdf at all'), set())
+        self.assertEqual(core.parse_acf_installed_ids(''), set())
+
+
+class TestScanWithSteamRecord(SandboxTestCase):
+    def test_steam_installed_id_is_not_orphan(self):
+        """回归：刚下载完、还没写进 WE 缓存的壁纸，不能显示成「已取消订阅」"""
+        workshop_dir, json_path, subscriptions = self.make_workshop(
+            subscribed_ids=['1111111111'], orphans=['3115163440'])
+        result = core.scan(workshop_dir, subscriptions, json_path=json_path,
+                           extra_subscribed={'3115163440'})
+
+        self.assertEqual(result['orphans'], [])
+        self.assertEqual([i['wid'] for i in result['subscribed']],
+                         ['1111111111', '3115163440'])
+        # 缓存里还没有它的标题和标注大小，按未知展示，其余字段与普通订阅项一致
+        entry = [i for i in result['subscribed'] if i['wid'] == '3115163440'][0]
+        self.assertEqual(entry['kind'], 'subscribed')
+        self.assertEqual(entry['title'], '未知')
+        self.assertEqual(entry['declared_size'], '未知')
+        self.assertNotIn('3115163440', result['missing'])
+
+    def test_installed_but_not_on_disk_is_missing(self):
+        workshop_dir, json_path, subscriptions = self.make_workshop(subscribed_ids=['1111111111'])
+        result = core.scan(workshop_dir, subscriptions, extra_subscribed={'9999999999'})
+        self.assertEqual(result['missing'], ['9999999999'])
+
+    def test_extra_ids_never_add_to_cleanup_list(self):
+        """额外来源只能保护，不能把别的目录变成待清理项"""
+        workshop_dir, json_path, subscriptions = self.make_workshop(
+            subscribed_ids=['1111111111'], orphans=['3333333333'], unknown=['backup-old'])
+        before = core.scan(workshop_dir, subscriptions)
+        after = core.scan(workshop_dir, subscriptions, extra_subscribed={'3115163440'})
+
+        self.assertEqual([i['wid'] for i in before['orphans']], ['3333333333'])
+        self.assertEqual([i['wid'] for i in after['orphans']], ['3333333333'])
+        self.assertEqual([i['wid'] for i in before['unknown']], ['backup-old'])
+        self.assertEqual([i['wid'] for i in after['unknown']], ['backup-old'])
+
+    def test_default_keeps_old_behaviour(self):
+        workshop_dir, json_path, subscriptions = self.make_workshop(orphans=['3115163440'])
+        result = core.scan(workshop_dir, subscriptions)
+        self.assertEqual([i['wid'] for i in result['orphans']], ['3115163440'])
+
+
+class TestFreshDownloadGuard(SandboxTestCase):
+    def test_recent_folder_is_protected(self):
+        workshop_dir, _json_path, _subs = self.make_workshop(orphans=['3333333333'])
+        path = os.path.join(workshop_dir, '3333333333')
+        self.assertTrue(core.is_freshly_downloaded(path))
+        self.assertTrue(core.is_freshly_downloaded(path, grace_seconds=60))
+
+    def test_old_folder_is_not_protected(self):
+        workshop_dir, _json_path, _subs = self.make_workshop(orphans=['3333333333'])
+        path = os.path.join(workshop_dir, '3333333333')
+        old = time.time() - core.FRESH_DOWNLOAD_GRACE_SECONDS - 60
+        os.utime(path, (old, old))
+        self.assertFalse(core.is_freshly_downloaded(path))
+
+    def test_zero_grace_disables_guard(self):
+        workshop_dir, _json_path, _subs = self.make_workshop(orphans=['3333333333'])
+        path = os.path.join(workshop_dir, '3333333333')
+        self.assertFalse(core.is_freshly_downloaded(path, grace_seconds=0))
+
+    def test_missing_path_is_not_protected(self):
+        self.assertFalse(core.is_freshly_downloaded(os.path.join(self.tmp, 'nope')))
 
 
 class TestDelete(SandboxTestCase):
