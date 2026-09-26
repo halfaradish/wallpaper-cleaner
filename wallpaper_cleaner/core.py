@@ -748,27 +748,85 @@ def describe_steam_record(context):
 
 PROJECT_JSON_MAX_BYTES = 1024 * 1024
 
+# 预览图：作者随内容一起发布的图片就躺在壁纸目录里，面板直接把字节发给浏览器，
+# 由浏览器解码、缩放、播放动画——不需要 Pillow，也不用联网问 Steam 要图。
+# 8 MB 是给「一张预览图」的常识边界，超过就当成没有，免得面板去读一个畸形大文件。
+PREVIEW_MAX_BYTES = 8 * 1024 * 1024
+PREVIEW_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.gif')
+PREVIEW_FALLBACK_NAMES = ('preview.jpg', 'preview.png', 'preview.jpeg', 'preview.gif')
+
 
 def read_project_meta(folder):
-    """从壁纸目录的 project.json 读标题与类型，返回 {'title', 'type'}
+    """从壁纸目录的 project.json 读标题、类型与作者声明的预览图，返回 {'title', 'type', 'preview'}
 
     project.json 是作者随内容一起发布的，就躺在目录里，与订阅状态无关——
     已取消订阅的残留也能读到名字。读不到（缺失、坏文件、过大）时返回空字符串。
+    preview 是文件名字段，这里只原样读出来，是否可用交给 find_preview 判断。
     """
+    empty = {'title': '', 'type': '', 'preview': ''}
     path = os.path.join(folder, 'project.json')
     try:
         if os.path.getsize(path) > PROJECT_JSON_MAX_BYTES:
-            return {'title': '', 'type': ''}
+            return empty
         with open(path, 'r', encoding='utf-8-sig', errors='replace') as f:
             data = json.load(f)
     except (OSError, ValueError):
-        return {'title': '', 'type': ''}
+        return empty
     if not isinstance(data, dict):
-        return {'title': '', 'type': ''}
+        return empty
     return {
         'title': str(data.get('title') or '').strip(),
         'type': str(data.get('type') or '').strip(),
+        'preview': str(data.get('preview') or '').strip(),
     }
+
+
+def _preview_name_ok(name):
+    """预览图名字必须是单层文件名且是图片扩展名（project.json 的内容不可全信）"""
+    if not name or not isinstance(name, str):
+        return False
+    if name in ('.', '..') or '/' in name or '\\' in name:
+        return False
+    return os.path.splitext(name)[1].lower() in PREVIEW_EXTENSIONS
+
+
+def resolve_preview_path(folder, name):
+    """把预览图文件名解析为绝对路径并复核，不合格返回空字符串
+
+    复核的是「扫描之后目录被人动过」的情况：文件名必须是单层图片名，真实路径
+    必须落在壁纸目录里（挡住被换成指向目录外的软链接），且不能大得离谱。
+    """
+    if not _preview_name_ok(name):
+        return ''
+    path = os.path.join(folder, name)
+    try:
+        if not os.path.isfile(path):
+            return ''
+        if os.path.getsize(path) > PREVIEW_MAX_BYTES:
+            return ''
+        base = os.path.realpath(folder)
+        real = os.path.realpath(path)
+    except OSError:
+        return ''
+    if os.path.dirname(real) != base:
+        return ''
+    return path
+
+
+def find_preview(folder, declared=''):
+    """找出目录里可用的预览图，返回文件名（不含路径）；没有则返回空字符串
+
+    project.json 的 preview 字段是作者声明的预览图，优先用它；字段不可信或文件
+    不在时按固定候选名找。静态图排在 GIF 前面，这样只有作者指定动图时才播动画。
+    """
+    candidates = []
+    if _preview_name_ok(declared):
+        candidates.append(declared)
+    candidates.extend(PREVIEW_FALLBACK_NAMES)
+    for name in candidates:
+        if resolve_preview_path(folder, name):
+            return name
+    return ''
 
 
 # 目录在这么久之内被改动过就不参与删除，兜住"正在下载、两边都还没有记录"的窗口。
@@ -957,12 +1015,10 @@ def scan(workshop_dir, subscriptions, json_path='', config_file='', on_progress=
             continue
         if name in subscriptions or name in extra:
             info = subscriptions.get(name) or {}
-            title = info.get('title') or ''
-            wp_type = ''
-            if not title:
-                # 缓存里还没有它（刚下载）时读壁纸自己的 project.json，大小取 Steam 记录
-                meta = read_project_meta(path)
-                title, wp_type = meta['title'], meta['type']
+            # 每个目录都读一次 project.json：缓存里还没有它（刚下载）时标题要靠它，
+            # 预览图也只有它写着是哪个文件
+            meta = read_project_meta(path)
+            title = info.get('title') or meta['title'] or ''
             declared = info.get('size') or ''
             if not declared and name in sizes:
                 declared = format_size(sizes[name])
@@ -973,7 +1029,8 @@ def scan(workshop_dir, subscriptions, json_path='', config_file='', on_progress=
                 'kind': 'subscribed',
                 'title': title or '未知',
                 'declared_size': declared or '未知',
-                'wp_type': wp_type,
+                'wp_type': meta['type'],
+                'preview': find_preview(path, meta['preview']),
             })
         elif name.isdigit():
             # 残留目录里也有作者发布的 project.json，用它把标题补上，别只显示一串数字
@@ -981,12 +1038,14 @@ def scan(workshop_dir, subscriptions, json_path='', config_file='', on_progress=
             orphans.append({
                 'wid': name, 'path': path, 'size_bytes': 0, 'kind': 'orphan',
                 'title': meta['title'], 'declared_size': '', 'wp_type': meta['type'],
+                'preview': find_preview(path, meta['preview']),
             })
         else:
             meta = read_project_meta(path)
             unknown.append({
                 'wid': name, 'path': path, 'size_bytes': 0, 'kind': 'unknown',
                 'title': meta['title'], 'declared_size': '', 'wp_type': meta['type'],
+                'preview': find_preview(path, meta['preview']),
             })
 
     # 目录大小计算是纯磁盘 I/O，用线程池并行（os.scandir 不持有 GIL）
