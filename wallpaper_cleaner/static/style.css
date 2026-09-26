@@ -318,6 +318,22 @@ td.col-size { font-family: var(--mono); font-size: 12px; color: var(--text-dim);
 .title-cell { color: var(--text-dim); max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wp-type { color: var(--muted); font-size: 11.5px; }
 
+/* 标题文字可点：用资源管理器打开这张壁纸的目录。只有文字本身是热区，
+   整行仍然是勾选与 hover 选中态的地盘。
+   截断必须落在行内盒子上：td 的 max-width 在表格布局里不生效（列宽由内容撑），
+   所以超长标题会一直把表格撑宽。完整标题在 title 属性里，悬停可见。 */
+.title-link {
+  display: inline-block;
+  max-width: 380px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+  cursor: pointer;
+}
+
+.title-link:hover { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
+
 /* 缩略图：96×54 是 16:9，正好是壁纸预览图的比例 */
 .col-thumb { width: 132px; padding-right: 0; }
 

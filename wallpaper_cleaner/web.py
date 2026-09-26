@@ -443,6 +443,8 @@ class PanelHandler(BaseHTTPRequestHandler):
             return self._post_scan()
         if parsed.path == '/api/delete':
             return self._post_delete(body)
+        if parsed.path == '/api/reveal':
+            return self._post_reveal(body)
         if parsed.path == '/api/config':
             return self._post_config(body)
         if parsed.path == '/api/autodetect':
@@ -515,6 +517,33 @@ class PanelHandler(BaseHTTPRequestHandler):
         )
         return self._send_json({'job_id': job_id})
 
+    def _post_reveal(self, body):
+        """在系统文件管理器里打开某个壁纸的目录
+
+        和缩略图一样只认最近一次扫描结果里的目录：ID 来自请求，路径来自扫描。
+        只把目录交给系统去打开，不读、不改目录里的任何东西。
+        """
+        wid = body.get('wid')
+        if not core.is_safe_wid(wid):
+            return self._send_json({'error': '非法的 workshop ID'}, 404)
+
+        item = self._scan_item(wid)
+        if item is None:
+            return self._send_json({'error': '该壁纸不在最近一次扫描结果里'}, 404)
+
+        path = item.get('path') or ''
+        if not path or not os.path.isdir(path):
+            # 扫描之后被删掉/被移走
+            return self._send_json({'error': '这个文件夹已经不在了，请重新扫描'}, 404)
+
+        try:
+            core.open_folder(path)
+        except OSError as e:
+            return self._send_json({'error': f'打开文件夹失败：{e}'}, 500)
+
+        core.logger.info('面板打开目录: %s', path)
+        return self._send_json({'ok': True})
+
     def _post_config(self, body):
         state = self.server.state
         json_path = body.get('json_path')
@@ -566,7 +595,7 @@ class PanelHandler(BaseHTTPRequestHandler):
             'workshop_dir': auto_workshop,
         })
 
-    # ---------- 缩略图 ----------
+    # ---------- 按 ID 查最近一次扫描结果（缩略图与打开目录共用） ----------
 
     def _scan_item(self, wid):
         """在最近一次扫描结果里按 ID 找条目，找不到返回 None
@@ -584,6 +613,8 @@ class PanelHandler(BaseHTTPRequestHandler):
                 if item.get('wid') == wid:
                     return item
         return None
+
+    # ---------- 缩略图 ----------
 
     def _serve_thumb(self, query):
         """发壁纸目录里的预览图字节，解码与缩放交给浏览器"""

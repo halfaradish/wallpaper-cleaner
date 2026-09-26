@@ -180,6 +180,27 @@ function thumbCell(item) {
     loading="lazy" decoding="async" title="点击放大"></td>`;
 }
 
+/* ---------------- 标题（可点开目录） ---------------- */
+
+// 标题文字可点：用系统文件管理器打开这张壁纸的目录。热区只有标题文字本身，
+// 不做整行/整格可点——那样会和行内勾选框、行 hover 选中态打架。
+// 没有标题的行（待清理表显示 —、已订阅表显示 未知）原样输出纯文本，不给点。
+const NO_TITLE = ['—', '未知'];
+
+function titleLink(item, text) {
+  if (!text || NO_TITLE.includes(text)) return esc(text || '—');
+  return `<span class="title-link" data-wid="${esc(item.wid)}"
+    title="${esc(text)}">${esc(text)}</span>`;
+}
+
+async function openFolder(wid) {
+  try {
+    await api('/api/reveal', { body: { wid } });
+  } catch (e) {
+    toast(`打不开文件夹：${e.message}`, 'error');
+  }
+}
+
 function openLightbox(src) {
   $('lightbox-img').src = src;
   $('lightbox').classList.remove('hidden');
@@ -237,7 +258,7 @@ function renderOrphans() {
       <td class="col-check"><input type="checkbox" data-wid="${esc(item.wid)}"${checked ? ' checked' : ''}></td>
       ${thumbCell(item)}
       <td class="wid">${esc(item.wid)}</td>
-      <td class="title-cell" title="${esc(title)}">${esc(title || '—')}${type}</td>
+      <td class="title-cell" title="${esc(title)}">${titleLink(item, title || '—')}${type}</td>
       <td class="col-kind"><span class="badge ${item.kind}">${kindLabel}</span></td>
       <td class="col-size">${fmtSize(item.size_bytes)}</td>
     </tr>`;
@@ -318,7 +339,7 @@ function renderSubscribed() {
   body.innerHTML = items.map((item) => `<tr>
     ${thumbCell(item)}
     <td class="wid">${esc(item.wid)}</td>
-    <td class="title-cell" title="${esc(item.title)}">${esc(item.title)}</td>
+    <td class="title-cell" title="${esc(item.title)}">${titleLink(item, item.title)}</td>
     <td class="col-size">${esc(item.declared_size)}</td>
     <td class="col-size">${fmtSize(item.size_bytes)}</td>
   </tr>`).join('');
@@ -768,6 +789,13 @@ function bind() {
     span.textContent = '—';
     img.replaceWith(span);
   }, true);
+
+  // 点标题用系统文件管理器打开这张壁纸的目录；只认标题文字，不占用整行
+  document.addEventListener('click', (e) => {
+    const target = e.target;
+    const link = target && target.closest ? target.closest('.title-link[data-wid]') : null;
+    if (link) openFolder(link.dataset.wid);
+  });
 
   // 点缩略图放大看原图，点别处或按 Esc 关掉
   document.addEventListener('click', (e) => {
