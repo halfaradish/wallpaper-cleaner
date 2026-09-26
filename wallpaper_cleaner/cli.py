@@ -74,9 +74,12 @@ def _preview(targets, held_back):
 
     for item in targets:
         note = '' if item['kind'] == 'orphan' else '　[非数字目录]'
-        logger.info(f'  待删除 {item["wid"]}  ({core.format_size(item["size_bytes"])}){note}')
-    for wid, reason in held_back:
-        logger.info(f'  保留 {wid}　[{reason}]')
+        title = f'  {item["title"]}' if item.get('title') else ''
+        logger.info(
+            f'  待删除 {item["wid"]}  ({core.format_size(item["size_bytes"])}){title}{note}'
+        )
+    for label, reason in held_back:
+        logger.info(f'  保留 {label}　[{reason}]')
 
     if not targets and not held_back:
         logger.info('  没有需要清理的内容')
@@ -105,10 +108,12 @@ def _hold_back(targets, workshop_dir, json_path):
     remaining, held = [], []
     for item in targets:
         wid = item['wid']
+        # 日志里带上标题，残留目录也能一眼认出来
+        label = core.item_label(item)
         if wid in protected:
-            held.append((wid, '仍处于订阅状态'))
+            held.append((label, '仍处于订阅状态'))
         elif wid not in complete and core.is_freshly_downloaded(item.get('path') or ''):
-            held.append((wid, f'目录在 {core.FRESH_DOWNLOAD_GRACE_SECONDS // 60} 分钟内被改动过'))
+            held.append((label, f'目录在 {core.FRESH_DOWNLOAD_GRACE_SECONDS // 60} 分钟内被改动过'))
         else:
             remaining.append(item)
     return remaining, held
@@ -150,8 +155,8 @@ def main(dry_run=False):
     # CLI 与旧版一致：未订阅的目录一律删除（面板里未知目录默认不勾选，更保守）
     targets = result['orphans'] + result['unknown']
     targets, held_back = _hold_back(targets, workshop_dir, json_path)
-    for wid, reason in held_back:
-        logger.warning(f'跳过 {wid}：{reason}')
+    for label, reason in held_back:
+        logger.warning(f'跳过 {label}：{reason}')
 
     if dry_run:
         _preview(targets, held_back)
