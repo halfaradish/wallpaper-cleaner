@@ -60,14 +60,27 @@ class DeleteGuardTestCase(unittest.TestCase):
         with open(self.json_path, 'w', encoding='utf-8') as f:
             json.dump(payload, f, ensure_ascii=False)
 
-    def write_acf(self, installed_ids):
-        """写一份最小可用的 appworkshop_431960.acf（Steam 安装记录）"""
+    def write_acf(self, installed_ids=(), subscribed_ids=(), age_seconds=0):
+        """写一份最小可用的 appworkshop_431960.acf
+
+        installed_ids 写进内容记录（WorkshopItemsInstalled，内容已装完）；
+        subscribed_ids 写进订阅记录（WorkshopItemDetails + subscribedby）。
+        两者的区别正是「残留」的定义：内容还在、订阅没了。
+        """
         lines = ['"AppWorkshop"', '{', '\t"appid"\t\t"431960"', '\t"WorkshopItemsInstalled"', '\t{']
         for wid in installed_ids:
             lines += [f'\t\t"{wid}"', '\t\t{', '\t\t\t"size"\t\t"1536"', '\t\t}']
+        lines += ['\t}', '\t"WorkshopItemDetails"', '\t{']
+        for wid in subscribed_ids:
+            lines += [f'\t\t"{wid}"', '\t\t{', '\t\t\t"subscribedby"\t\t"1508410657"', '\t\t}']
         lines += ['\t}', '}', '']
-        with open(core.steam_acf_path(self.workshop_dir), 'w', encoding='utf-8') as f:
+
+        path = core.steam_acf_path(self.workshop_dir)
+        with open(path, 'w', encoding='utf-8') as f:
             f.write('\n'.join(lines))
+        if age_seconds:
+            stamp = time.time() - age_seconds
+            os.utime(path, (stamp, stamp))
 
     def make_folder(self, wid, minutes_old=0):
         """造一个壁纸目录；minutes_old 用来模拟"早就下载好、已经过了保护期"的目录"""
@@ -84,10 +97,11 @@ class DeleteGuardTestCase(unittest.TestCase):
 
     def scan_items(self, wids):
         """按"扫描那一刻"的状态取待清理项（与面板的扫描流程一致）"""
-        subscriptions = core.load_subscriptions(self.json_path)
-        installed = core.load_steam_installed_ids(core.steam_acf_path(self.workshop_dir))
-        scan = core.scan(self.workshop_dir, subscriptions, json_path=self.json_path,
-                         extra_subscribed=installed)
+        context = core.load_subscription_context(self.json_path, self.workshop_dir)
+        scan = core.scan(
+            self.workshop_dir, context['subscriptions'], json_path=self.json_path,
+            extra_subscribed=context['protected'], extra_sizes=context['installed_sizes'],
+        )
         items = [i for i in scan['orphans'] + scan['unknown'] if i['wid'] in wids]
         return scan, items
 
@@ -104,7 +118,7 @@ class TestDeleteGuards(DeleteGuardTestCase):
         """回归：Steam 已记录、WE 缓存还没更新时，扫描就不该把它列为待清理"""
         self.write_cache([])
         self.make_folder('3115163440')
-        self.write_acf(['3115163440'])
+        self.write_acf(installed_ids=['3115163440'], subscribed_ids=['3115163440'])
 
         scan, items = self.scan_items(['3115163440'])
 
@@ -114,14 +128,14 @@ class TestDeleteGuards(DeleteGuardTestCase):
         self.assertEqual(scan['missing'], [])
 
     def test_steam_record_appearing_after_scan_blocks_delete(self):
-        """扫描之后才写进 Steam 安装记录的（重新下载/重新订阅），删除时必须拦下"""
+        """扫描之后才写进 Steam 订阅记录的（重新下载/重新订阅），删除时必须拦下"""
         self.write_cache([])
         folder = self.make_folder('3115163440',
                                  minutes_old=core.FRESH_DOWNLOAD_GRACE_SECONDS // 60 + 5)
         scan, items = self.scan_items(['3115163440'])
         self.assertEqual(len(items), 1)  # 扫描那一刻它还像是残留
 
-        self.write_acf(['3115163440'])  # 之后 Steam 记下了安装记录
+        self.write_acf(installed_ids=['3115163440'], subscribed_ids=['3115163440'])
         outcome, job = self.run_delete(scan, items)
 
         self.assertEqual(outcome['deleted'], [])
@@ -129,8 +143,39 @@ class TestDeleteGuards(DeleteGuardTestCase):
         self.assertTrue(os.path.isdir(folder))
         self.assertTrue(any('跳过' in line['text'] for line in job['lines']))
 
+    def test_stale_steam_record_leftover_is_offered_and_deletable(self):
+        """回归（神里绫华）：WE 缓存已移除、Steam 记录仍标记为已订阅但更旧 → 必须报成残留"""
+        self.write_cache([])
+        folder = self.make_folder('3355505516',
+                                 minutes_old=core.FRESH_DOWNLOAD_GRACE_SECONDS // 60 + 5)
+        self.write_acf(installed_ids=['3355505516'], subscribed_ids=['3355505516'],
+                       age_seconds=600)  # Steam 记录比 WE 缓存旧
+
+        scan, items = self.scan_items(['3355505516'])
+
+        self.assertEqual([i['wid'] for i in items], ['3355505516'])
+        self.assertEqual(scan['orphans'][0]['kind'], 'orphan')
+
+        outcome, _job = self.run_delete(scan, items)
+        self.assertEqual(len(outcome['deleted']), 1)
+        self.assertFalse(os.path.exists(folder))
+
+    def test_installed_only_record_is_a_leftover(self):
+        """回归：Steam 只在安装记录里留着它（内容还在磁盘上）→ 它是残留，不是已订阅"""
+        self.write_cache([])
+        folder = self.make_folder('3115163440',
+                                 minutes_old=core.FRESH_DOWNLOAD_GRACE_SECONDS // 60 + 5)
+        self.write_acf(installed_ids=['3115163440'])  # 只有内容记录，没有订阅记录
+
+        scan, items = self.scan_items(['3115163440'])
+
+        self.assertEqual([i['wid'] for i in items], ['3115163440'])
+        outcome, _job = self.run_delete(scan, items)
+        self.assertEqual(len(outcome['deleted']), 1)
+        self.assertFalse(os.path.exists(folder))
+
     def test_recent_folder_is_skipped_even_without_steam_record(self):
-        """读不到 ACF 时的兜底：刚改动过的目录先放过一轮"""
+        """读不到 Steam 记录时的兜底：刚改动过的目录先放过一轮"""
         self.write_cache([])
         folder = self.make_folder('3115163440')  # mtime 就是现在
         scan, items = self.scan_items(['3115163440'])
@@ -141,6 +186,21 @@ class TestDeleteGuards(DeleteGuardTestCase):
         self.assertEqual(outcome['deleted'], [])
         self.assertEqual(outcome['skipped'], ['3115163440'])
         self.assertTrue(os.path.isdir(folder))
+
+    def test_completed_download_is_not_held_by_grace(self):
+        """刚下载完就被取消订阅：Steam 记录已写明内容装完，不该再按"可能正在下载"等 30 分钟"""
+        self.write_cache([])
+        folder = self.make_folder('3611425904')  # mtime 就是现在
+        self.write_acf(installed_ids=['3611425904'])  # 内容记录里有它，订阅记录里没有
+
+        scan, items = self.scan_items(['3611425904'])
+        self.assertEqual(len(items), 1)
+
+        outcome, _job = self.run_delete(scan, items)
+
+        self.assertEqual(outcome['skipped'], [])
+        self.assertEqual(len(outcome['deleted']), 1)
+        self.assertFalse(os.path.exists(folder))
 
     def test_folder_resubscribed_after_scan_is_skipped(self):
         self.write_cache([])

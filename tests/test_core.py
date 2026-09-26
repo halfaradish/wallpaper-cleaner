@@ -17,8 +17,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from wallpaper_cleaner import core
 
 
-# 仿真的 appworkshop_431960.acf：WorkshopItemsInstalled 里是已安装的，
-# WorkshopItemDetails 里还有一条没安装的（9999999999），它不该被当成已订阅
+# 仿真的 appworkshop_431960.acf。
+# 关键语义：WorkshopItemsInstalled 是"内容还在磁盘上"的记录，WorkshopItemDetails 里带
+# subscribedby 的才是"还在订阅"。3115163440 只在安装记录里 —— 它正是取消订阅后的残留；
+# 9999999999 只在明细里 —— 已订阅但内容还没装完。
 ACF_SAMPLE = '''"AppWorkshop"
 {
 \t"appid"\t\t"431960"
@@ -55,6 +57,32 @@ ACF_SAMPLE = '''"AppWorkshop"
 '''
 
 ACF_INSTALLED_IDS = {'826336550', '3115163440'}
+ACF_SUBSCRIBED_IDS = {'826336550', '9999999999'}
+
+# 部分 Steam 版本会额外写一个订阅清单小节，这个也要认
+ACF_WITH_SUBSCRIBED_SECTION = '''"AppWorkshop"
+{
+\t"appid"\t\t"431960"
+\t"WorkshopItemsSubscribed"
+\t{
+\t\t"1111111111"
+\t\t{
+\t\t\t"timeupdated"\t\t"1700000000"
+\t\t}
+\t}
+\t"WorkshopItemsInstalled"
+\t{
+\t\t"1111111111"
+\t\t{
+\t\t\t"size"\t\t"1024"
+\t\t}
+\t\t"2222222222"
+\t\t{
+\t\t\t"size"\t\t"2048"
+\t\t}
+\t}
+}
+'''
 
 
 def rmtree(path):
@@ -335,14 +363,36 @@ class TestScan(SandboxTestCase):
 
 
 class TestSteamAcf(SandboxTestCase):
-    def test_parses_installed_ids_only(self):
-        """只收 WorkshopItemsInstalled 的一级子键，字段名和 Details 条目都不算"""
-        self.assertEqual(core.parse_acf_installed_ids(ACF_SAMPLE), ACF_INSTALLED_IDS)
+    def test_parses_nested_sections(self):
+        root = core.parse_vdf(ACF_SAMPLE)
+        app = root['AppWorkshop']
+        self.assertEqual(app['appid'], '431960')
+        self.assertEqual(app['WorkshopItemsInstalled']['826336550']['size'], '2420536')
+        self.assertEqual(app['WorkshopItemDetails']['9999999999']['subscribedby'], '1508410657')
 
-    def test_legacy_misspelled_section(self):
-        """旧版 Steam 把这个小节拼成了 WokshopItemsInstalled"""
+    def test_subscription_comes_from_details_not_installed(self):
+        """订阅记录 = 明细里的 subscribedby；安装记录里多出来的那条不算已订阅"""
+        subscribed, installed = core.parse_acf_record(ACF_SAMPLE)
+        self.assertEqual(subscribed, ACF_SUBSCRIBED_IDS)
+        self.assertEqual(set(installed), ACF_INSTALLED_IDS)
+        self.assertNotIn('3115163440', subscribed)  # 只在安装记录里 → 残留
+        self.assertIn('3115163440', installed)
+
+    def test_subscribed_section_is_supported(self):
+        subscribed, installed = core.parse_acf_record(ACF_WITH_SUBSCRIBED_SECTION)
+        self.assertEqual(subscribed, {'1111111111'})
+        self.assertEqual(set(installed), {'1111111111', '2222222222'})
+
+    def test_subscribedby_zero_is_ignored(self):
+        text = ACF_SAMPLE.replace('"subscribedby"\t\t"1508410657"', '"subscribedby"\t\t"0"')
+        subscribed, _installed = core.parse_acf_record(text)
+        self.assertEqual(subscribed, set())
+
+    def test_legacy_misspelled_installed_section(self):
+        """旧版 Steam 把安装记录小节拼成了 WokshopItemsInstalled"""
         text = ACF_SAMPLE.replace('WorkshopItemsInstalled', 'WokshopItemsInstalled')
-        self.assertEqual(core.parse_acf_installed_ids(text), ACF_INSTALLED_IDS)
+        _subscribed, installed = core.parse_acf_record(text)
+        self.assertEqual(set(installed), ACF_INSTALLED_IDS)
 
     def test_derives_path_from_workshop_dir(self):
         workshop_dir = os.path.join(self.tmp, 'steamapps', 'workshop', 'content', '431960')
@@ -359,27 +409,166 @@ class TestSteamAcf(SandboxTestCase):
         os.makedirs(workshop_dir)
         acf_path = core.steam_acf_path(workshop_dir)
         self.write(acf_path, '\ufeff' + ACF_SAMPLE.replace('\n', '\r\n'))
-        self.assertEqual(core.load_steam_installed_ids(acf_path), ACF_INSTALLED_IDS)
 
-    def test_missing_file_returns_empty_set(self):
-        self.assertEqual(core.load_steam_installed_ids(os.path.join(self.tmp, 'nope.acf')), set())
-        self.assertEqual(core.load_steam_installed_ids(''), set())
+        record = core.load_steam_record(acf_path)
+        self.assertTrue(record['ok'])
+        self.assertEqual(record['subscribed'], ACF_SUBSCRIBED_IDS)
+        self.assertGreater(record['mtime'], 0)
+
+    def test_missing_file_returns_empty_record(self):
+        record = core.load_steam_record(os.path.join(self.tmp, 'nope.acf'))
+        self.assertFalse(record['ok'])
+        self.assertEqual(record['subscribed'], set())
+        self.assertEqual(record['installed'], {})
+        self.assertFalse(core.load_steam_record('')['ok'])
 
     def test_truncated_file_does_not_raise(self):
         """Steam 正在重写这个文件时读到的可能是半截内容，不能因此中断扫描"""
-        cut = ACF_SAMPLE[:ACF_SAMPLE.index('"3115163440"')]
-        self.assertEqual(core.parse_acf_installed_ids(cut), {'826336550'})
+        cut = ACF_SAMPLE[:ACF_SAMPLE.index('"9999999999"')]  # 断在明细小节中间
+        subscribed, installed = core.parse_acf_record(cut)
+        self.assertEqual(subscribed, {'826336550'})
+        self.assertEqual(set(installed), ACF_INSTALLED_IDS)
 
         dangling = '"AppWorkshop"\n{\n\t"WorkshopItemsInstalled"\n\t{\n\t\t"111"\n\t\t{\n'
-        self.assertEqual(core.parse_acf_installed_ids(dangling), {'111'})
+        _subscribed, installed = core.parse_acf_record(dangling)
+        self.assertEqual(set(installed), {'111'})
 
-    def test_garbage_returns_empty_set(self):
-        self.assertEqual(core.parse_acf_installed_ids('not a vdf at all'), set())
-        self.assertEqual(core.parse_acf_installed_ids(''), set())
+    def test_garbage_returns_empty(self):
+        self.assertEqual(core.parse_acf_record('not a vdf at all'), (set(), {}))
+        self.assertEqual(core.parse_acf_record(''), (set(), {}))
+
+    def test_installed_sizes_are_parsed(self):
+        _subscribed, installed = core.parse_acf_record(ACF_SAMPLE)
+        self.assertEqual(core.installed_sizes({'installed': installed})['3115163440'], 1536)
+        # 解析不了的 size 直接跳过，不影响其它条目
+        self.assertEqual(core.installed_sizes({'installed': {'1': {'size': 'abc'}, '2': {}}}), {})
+
+
+class TestSubscriptionContext(SandboxTestCase):
+    """「谁更新就信谁」：Steam 的 ACF 只在比 WE 缓存新时才被采信"""
+
+    def make_layout(self, cache_ids=(), acf_text=None, acf_age=0, cache_age=0):
+        """按 Steam 的真实层级搭沙箱，返回 (workshop_dir, json_path)"""
+        workshop_dir = os.path.join(self.tmp, 'steamapps', 'workshop', 'content', '431960')
+        os.makedirs(workshop_dir, exist_ok=True)
+        json_path = os.path.join(self.tmp, 'workshopcache.json')
+        payload = {
+            'user': 1,
+            'version': 2,
+            'wallpapers': [
+                {'workshopid': i, 'title': f'壁纸 {i}', 'filesizelabel': '1 MB'}
+                for i in cache_ids
+            ],
+        }
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False)
+
+        acf_path = core.steam_acf_path(workshop_dir)
+        if acf_text is not None:
+            self.write(acf_path, acf_text)
+            now = time.time()
+            os.utime(json_path, (now - cache_age, now - cache_age))
+            os.utime(acf_path, (now - acf_age, now - acf_age))
+        return workshop_dir, json_path
+
+    def test_newer_steam_record_is_trusted(self):
+        """刚下载完：Steam 记录比缓存新，用它兜住还没进缓存的壁纸"""
+        workshop_dir, json_path = self.make_layout(
+            cache_ids=['826336550'], acf_text=ACF_SAMPLE, acf_age=0, cache_age=600)
+        context = core.load_subscription_context(json_path, workshop_dir)
+
+        self.assertTrue(context['steam_fresh'])
+        self.assertIn('9999999999', context['protected'])  # 只在 Steam 明细里
+        self.assertEqual(context['disputed'], set())
+
+    def test_older_steam_record_is_ignored(self):
+        """刚取消订阅：Steam 记录比缓存旧，里面的订阅字段已过期，以缓存为准"""
+        workshop_dir, json_path = self.make_layout(
+            cache_ids=['826336550'], acf_text=ACF_SAMPLE, acf_age=600, cache_age=0)
+        context = core.load_subscription_context(json_path, workshop_dir)
+
+        self.assertFalse(context['steam_fresh'])
+        self.assertEqual(context['protected'], {'826336550'})
+        self.assertIn('9999999999', context['disputed'])
+
+    def test_installed_only_id_is_never_protected(self):
+        """回归（神里绫华）：只有安装记录的目录是残留，不能被当成已订阅保护起来"""
+        workshop_dir, json_path = self.make_layout(
+            cache_ids=[], acf_text=ACF_SAMPLE, acf_age=0, cache_age=600)
+        context = core.load_subscription_context(json_path, workshop_dir)
+
+        self.assertNotIn('3115163440', context['protected'])
+        self.assertIn('9999999999', context['protected'])
+        self.assertEqual(context['installed_sizes']['3115163440'], 1536)
+
+    def test_leftover_is_reported_as_orphan(self):
+        """端到端回归：WE 缓存已移除 + Steam 记录较旧 → 必须报成待清理"""
+        workshop_dir, json_path = self.make_layout(
+            cache_ids=['826336550'], acf_text=ACF_SAMPLE, acf_age=600, cache_age=0)
+        for wid in ('826336550', '3115163440'):
+            os.makedirs(os.path.join(workshop_dir, wid))
+        context = core.load_subscription_context(json_path, workshop_dir)
+
+        result = core.scan(
+            workshop_dir, context['subscriptions'],
+            extra_subscribed=context['protected'], extra_sizes=context['installed_sizes'],
+        )
+        self.assertEqual([i['wid'] for i in result['orphans']], ['3115163440'])
+        self.assertEqual([i['wid'] for i in result['subscribed']], ['826336550'])
+
+    def test_missing_acf_degrades_to_cache_only(self):
+        workshop_dir, json_path = self.make_layout(cache_ids=['826336550'], acf_text=None)
+        context = core.load_subscription_context(json_path, workshop_dir)
+
+        self.assertFalse(context['steam']['ok'])
+        self.assertEqual(context['protected'], {'826336550'})
+        lines = core.describe_steam_record(context)
+        self.assertTrue(any(level == 'warn' for level, _msg in lines))
+
+    def test_describe_mentions_stale_record_and_leftovers(self):
+        workshop_dir, json_path = self.make_layout(
+            cache_ids=['826336550'], acf_text=ACF_SAMPLE, acf_age=600, cache_age=0)
+        context = core.load_subscription_context(json_path, workshop_dir)
+
+        text = ' '.join(msg for _level, msg in core.describe_steam_record(context))
+        self.assertIn('以缓存为准', text)
+        self.assertIn('安装记录里有 1 条内容已不在订阅列表', text)
+
+
+class TestScanDisplayFallback(SandboxTestCase):
+    def test_title_and_size_fall_back_to_folder_and_steam_record(self):
+        """缓存里还没有标题时，用壁纸自己的 project.json 和 Steam 记录的占用大小补上"""
+        workshop_dir, json_path, subscriptions = self.make_workshop(subscribed_ids=['1111111111'])
+        wid = '3115163440'
+        folder = os.path.join(workshop_dir, wid)
+        os.makedirs(folder)
+        self.write(
+            os.path.join(folder, 'project.json'),
+            json.dumps({'title': '神里绫华-X-Ray-ほうき星', 'type': 'scene'}),
+        )
+
+        result = core.scan(workshop_dir, subscriptions, extra_subscribed={wid},
+                           extra_sizes={wid: 54567690})
+        entry = [i for i in result['subscribed'] if i['wid'] == wid][0]
+        self.assertEqual(entry['title'], '神里绫华-X-Ray-ほうき星')
+        self.assertEqual(entry['declared_size'], core.format_size(54567690))
+        self.assertEqual(result['orphans'], [])
+
+    def test_broken_project_json_falls_back_to_unknown(self):
+        workshop_dir, json_path, subscriptions = self.make_workshop(subscribed_ids=['1111111111'])
+        wid = '3115163440'
+        folder = os.path.join(workshop_dir, wid)
+        os.makedirs(folder)
+        self.write(os.path.join(folder, 'project.json'), '{ not json')
+
+        result = core.scan(workshop_dir, subscriptions, extra_subscribed={wid})
+        entry = [i for i in result['subscribed'] if i['wid'] == wid][0]
+        self.assertEqual(entry['title'], '未知')
+        self.assertEqual(entry['declared_size'], '未知')
 
 
 class TestScanWithSteamRecord(SandboxTestCase):
-    def test_steam_installed_id_is_not_orphan(self):
+    def test_steam_subscribed_id_is_not_orphan(self):
         """回归：刚下载完、还没写进 WE 缓存的壁纸，不能显示成「已取消订阅」"""
         workshop_dir, json_path, subscriptions = self.make_workshop(
             subscribed_ids=['1111111111'], orphans=['3115163440'])
