@@ -1,6 +1,10 @@
-"""面板删除流程的单元测试：只在临时沙箱里构造目录树，不启动 HTTP 服务、不碰真实目录
+"""面板的单元测试：只在临时沙箱里构造目录树，不碰真实配置与真实 Steam 目录
 
-重点覆盖「删除前的两道安全校验」——刚下载的壁纸即使被扫描列进了待清理，也不能真的被删掉。
+重点覆盖两类安全边界：
+- 删除前的两道校验——刚下载的壁纸即使被扫描列进了待清理，也不能真的被删掉；
+- 只读接口（缩略图、打开目录）只认最近一次扫描结果里的目录，不接受请求里的路径。
+
+只读接口用真 HTTP 服务测（临时端口）；删除流程直接调 worker，不经过 HTTP。
 
 运行：python -m unittest discover -s tests -v
 """
@@ -16,6 +20,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -310,8 +315,8 @@ class TestEmptyCacheHandling(DeleteGuardTestCase):
         self.assertTrue(os.path.isdir(folder))
 
 
-class ThumbEndpointTestCase(DeleteGuardTestCase):
-    """缩略图接口：真的起一个 HTTP 服务，用请求验证响应内容与安全校验"""
+class PanelEndpointTestCase(DeleteGuardTestCase):
+    """真起一个 HTTP 服务来测只读接口（缩略图、打开目录），用请求验证响应与安全校验"""
 
     PNG_BYTES = b'\x89PNG\r\n\x1a\n' + b'x' * 64
 
@@ -363,8 +368,25 @@ class ThumbEndpointTestCase(DeleteGuardTestCase):
         except urllib.error.HTTPError as e:
             return e.code, e.headers, e.read()
 
+    def post(self, path, payload, token=None):
+        """发一个 POST；token 传 None 表示不带令牌（用于验证写保护）"""
+        headers = {'Content-Type': 'application/json'}
+        if token is not None:
+            headers['X-Panel-Token'] = token
+        request = urllib.request.Request(
+            f'http://127.0.0.1:{self.port}{path}',
+            data=json.dumps(payload).encode('utf-8'), method='POST', headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=5) as res:
+                return res.status, res.headers, res.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.headers, e.read()
 
-class TestThumbEndpoint(ThumbEndpointTestCase):
+    def token(self):
+        return self.state.token
+
+
+class TestThumbEndpoint(PanelEndpointTestCase):
     def test_serves_the_folders_own_preview(self):
         self.make_preview_folder('3333333333')
         self.scan_now()
@@ -449,6 +471,98 @@ class TestThumbEndpoint(ThumbEndpointTestCase):
         status, _headers, _body = self.get('/api/thumb?wid=3333333333')
 
         self.assertEqual(status, 404)
+
+
+class TestRevealEndpoint(PanelEndpointTestCase):
+    """点标题打开目录：只打开最近一次扫描结果里的目录，且必须带令牌"""
+
+    def reveal(self, wid, token=None):
+        """调一次接口，返回 (状态码, 正文, open_folder 的 mock)"""
+        with mock.patch.object(core, 'open_folder') as opener:
+            status, _headers, body = self.post(
+                '/api/reveal', {'wid': wid},
+                token=self.token() if token is None else token)
+        return status, body, opener
+
+    def test_opens_the_folder_of_a_scanned_item(self):
+        folder = self.make_folder('3333333333')
+        self.scan_now()
+
+        status, body, opener = self.reveal('3333333333')
+
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body.decode('utf-8')), {'ok': True})
+        opener.assert_called_once_with(folder)
+
+    def test_subscribed_item_can_be_opened_too(self):
+        """已订阅壁纸的标题同样可点"""
+        self.write_cache(['1111111111'])
+        folder = self.make_folder('1111111111')
+        self.scan_now()
+
+        status, _body, opener = self.reveal('1111111111')
+
+        self.assertEqual(status, 200)
+        opener.assert_called_once_with(folder)
+
+    def test_requires_the_panel_token(self):
+        self.make_folder('3333333333')
+        self.scan_now()
+
+        status, _body, opener = self.reveal('3333333333', token='')
+
+        self.assertEqual(status, 403)
+        opener.assert_not_called()
+
+    def test_unknown_wid_is_rejected(self):
+        self.make_folder('3333333333')
+        self.scan_now()
+
+        status, body, opener = self.reveal('9999999999')
+
+        self.assertEqual(status, 404)
+        self.assertIn('最近一次扫描', body.decode('utf-8'))
+        opener.assert_not_called()
+
+    def test_request_before_any_scan_is_rejected(self):
+        self.make_folder('3333333333')
+
+        status, _body, opener = self.reveal('3333333333')
+
+        self.assertEqual(status, 404)
+        opener.assert_not_called()
+
+    def test_folder_deleted_after_scan_reports_clearly(self):
+        folder = self.make_folder('3333333333')
+        self.scan_now()
+        shutil.rmtree(folder)
+
+        status, body, opener = self.reveal('3333333333')
+
+        self.assertEqual(status, 404)
+        self.assertIn('已经不在了', body.decode('utf-8'))
+        opener.assert_not_called()
+
+    def test_odd_wids_are_rejected(self):
+        self.make_folder('3333333333')
+        self.scan_now()
+
+        for wid in ('../../../../workshopcache.json', '..', 'a/b', '3333333333/x', 12345):
+            status, _body, opener = self.reveal(wid)
+            self.assertEqual(status, 404, f'wid={wid!r} 应当被拒绝')
+            opener.assert_not_called()
+
+    def test_folder_content_is_untouched(self):
+        folder = self.make_folder('3333333333')
+        with open(os.path.join(folder, 'project.json'), 'w', encoding='utf-8') as f:
+            json.dump({'title': '壁纸', 'type': 'scene'}, f)
+        before = sorted(os.listdir(folder))
+        self.scan_now()
+
+        status, _body, _opener = self.reveal('3333333333')
+
+        self.assertEqual(status, 200)
+        self.assertEqual(sorted(os.listdir(folder)), before)
 
 
 if __name__ == '__main__':

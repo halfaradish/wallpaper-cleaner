@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -693,6 +694,20 @@ class TestPreview(SandboxTestCase):
         except (OSError, NotImplementedError, AttributeError):
             self.skipTest('当前环境不允许创建符号链接')
         self.assertEqual(core.resolve_preview_path(folder, 'preview.jpg'), '')
+
+
+class TestOpenFolder(unittest.TestCase):
+    """点标题打开目录最终落到系统文件管理器上，这里只验证这层交接"""
+
+    def test_hands_the_path_to_the_system_file_manager(self):
+        with mock.patch.object(core.os, 'startfile', create=True) as startfile:
+            core.open_folder(r'C:\some\dir')
+        startfile.assert_called_once_with(r'C:\some\dir')
+
+    def test_unsupported_platform_raises_instead_of_silently_doing_nothing(self):
+        with mock.patch.object(core.sys, 'platform', 'linux'):
+            with self.assertRaises(OSError):
+                core.open_folder('/some/dir')
 
 
 class TestItemLabel(unittest.TestCase):
