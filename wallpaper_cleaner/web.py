@@ -192,18 +192,11 @@ def _scan_worker(state, job):
     emit(0, 0, f'订阅缓存: {paths["json_path"]}', 'debug')
     emit(0, 0, f'壁纸目录: {paths["workshop_dir"]}', 'debug')
 
-    subscriptions = core.load_subscriptions(paths['json_path'])
+    context = core.load_subscription_context(paths['json_path'], paths['workshop_dir'])
+    subscriptions = context['subscriptions']
     emit(0, 0, f'已订阅壁纸数量: {len(subscriptions)}', 'info')
-
-    # Steam 的安装记录是第二个订阅来源：刚下载完的壁纸可能还没写进 WE 的缓存
-    acf_path = core.steam_acf_path(paths['workshop_dir'])
-    installed = core.load_steam_installed_ids(acf_path)
-    if installed:
-        pending = installed - set(subscriptions)
-        emit(0, 0, f'Steam 安装记录: {len(installed)} 条'
-                  + (f'，其中 {len(pending)} 条还没进订阅缓存' if pending else ''), 'debug')
-    else:
-        emit(0, 0, f'读不到 Steam 安装记录（{acf_path}），本次不做交叉核对', 'warn')
+    for level, message in core.describe_steam_record(context):
+        emit(0, 0, message, level)
 
     result = core.scan(
         paths['workshop_dir'],
@@ -211,7 +204,8 @@ def _scan_worker(state, job):
         json_path=paths['json_path'],
         config_file=paths['config_file'] or '',
         on_progress=emit,
-        extra_subscribed=installed,
+        extra_subscribed=context['protected'],
+        extra_sizes=context['installed_sizes'],
     )
 
     with state.lock:
@@ -237,22 +231,24 @@ def _delete_worker(state, job, scan, items, recycle):
     emit(0, total, '正在复核订阅列表…', 'info')
 
     # 扫描之后可能有人重新订阅了某些壁纸，删除前必须重新核对，避免删掉刚订阅的内容。
-    # Steam 的安装记录也要一起看：刚下载完的壁纸可能还没写进 WE 的订阅缓存。
+    # 这里用与扫描时同一套判定（含「谁更新就信谁」的 Steam 记录仲裁），不另写一份。
     try:
-        subscriptions = core.load_subscriptions(scan['json_path'])
+        context = core.load_subscription_context(scan['json_path'], scan['workshop_dir'])
     except core.SubscriptionError as e:
         raise core.ScanError(f'删除前复核订阅列表失败，已中止：{e}')
-    installed = core.load_steam_installed_ids(core.steam_acf_path(scan['workshop_dir']))
-    protected = set(subscriptions) | installed
+    protected = context['protected']
 
     revived = [i for i in items if i['wid'] in protected]
     rest = [i for i in items if i['wid'] not in protected]
     for item in revived:
         emit(0, total, f"跳过 {item['wid']}：该壁纸仍处于订阅或已安装状态", 'warn')
 
-    # 目录刚被改动过说明可能还在下载，先放过这一轮
+    # 目录刚被改动过说明可能还在下载，先放过这一轮；
+    # 但 Steam 记录可信且已写明内容装完时，就不是"正在下载"，不必再等
+    complete = context['complete']
     grace_minutes = core.FRESH_DOWNLOAD_GRACE_SECONDS // 60
-    fresh = [i for i in rest if core.is_freshly_downloaded(i.get('path') or '')]
+    fresh = [i for i in rest
+             if i['wid'] not in complete and core.is_freshly_downloaded(i.get('path') or '')]
     fresh_wids = {i['wid'] for i in fresh}
     targets = [i for i in rest if i['wid'] not in fresh_wids]
     for item in fresh:

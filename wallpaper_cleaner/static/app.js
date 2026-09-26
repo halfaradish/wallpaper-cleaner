@@ -3,6 +3,7 @@
 const TOKEN = window.__PANEL_TOKEN__;
 const OVERLAY_DELAY = 400;   // 任务很快时不要闪一下进度弹窗
 const LOG_REFRESH_MS = 2000;
+const SCAN_REUSE_MS = 60000; // 服务端的扫描结果超过这个时间就重新扫，别拿几分钟前的状态糊弄人
 
 const state = {
   paths: null,
@@ -108,8 +109,12 @@ function renderNotice() {
   }
 
   if (scan && scan.orphans.length === 0 && scan.unknown.length === 0) {
-    el.className = 'notice ok';
-    el.innerHTML = '<span>很干净，没有需要清理的内容。磁盘上的文件夹和订阅列表完全一致。</span>';
+    // 只有"已订阅但还没下载"时不能说成完全一致，那句话会让人以为本地就是全部
+    const missing = scan.missing ? scan.missing.length : 0;
+    el.className = missing ? 'notice' : 'notice ok';
+    el.innerHTML = missing
+      ? `<span>没有需要清理的内容。另有 ${missing} 张已订阅的壁纸还没下载到本地。</span>`
+      : '<span>很干净，没有需要清理的内容。磁盘上的文件夹和订阅列表完全一致。</span>';
     return;
   }
 
@@ -721,6 +726,13 @@ function bind() {
 
 /* ---------------- 启动 ---------------- */
 
+function scanAgeMs(scan) {
+  // scanned_at 是本地时间的 'YYYY-MM-DD HH:MM:SS'，解析不了就当过期处理
+  if (!scan || !scan.scanned_at) return Infinity;
+  const parsed = Date.parse(String(scan.scanned_at).replace(' ', 'T'));
+  return Number.isNaN(parsed) ? Infinity : Date.now() - parsed;
+}
+
 async function bootstrap() {
   bind();
   try {
@@ -732,8 +744,8 @@ async function bootstrap() {
 
   // 打开面板就自动检查一遍，普通用户不必自己去找「重新扫描」
   if (!state.paths || state.paths.source === 'none') return;
-  if (state.scan) {
-    // 服务端已有扫描结果（刷新页面、开第二个窗口），选中状态只存在页面内存里，这里补上
+  if (state.scan && scanAgeMs(state.scan) < SCAN_REUSE_MS) {
+    // 刚扫过（刷新页面、开第二个窗口）就直接复用，选中状态只存在页面内存里，这里补上
     selectAllOrphans();
   } else {
     startScan({ auto: true });
