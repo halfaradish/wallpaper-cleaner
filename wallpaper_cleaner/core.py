@@ -549,21 +549,26 @@ def steam_acf_path(workshop_dir):
     return os.path.join(workshop_root, f'appworkshop_{appid}.acf')
 
 
-# ACF 里记录"已安装"的小节名（大小写不敏感）；后者是旧版 Steam 的拼写
+# ACF 小节名（大小写不敏感）。订阅记录与内容记录是两回事：
+# WorkshopItemsSubscribed / WorkshopItemDetails 是订阅记录，取消订阅后条目会被移除；
+# WorkshopItemsInstalled 是内容记录，内容还在磁盘上就留着——取消订阅的残留正属于这一类，
+# 所以它绝不能当订阅用。Wokshop... 那个拼写是旧版 Steam 的。
+ACF_SUBSCRIBED_SECTIONS = ('workshopitemssubscribed',)
+ACF_DETAILS_SECTIONS = ('workshopitemdetails',)
 ACF_INSTALLED_SECTIONS = ('workshopitemsinstalled', 'wokshopitemsinstalled')
 
 # 匹配 VDF/KeyValues 的 token：带引号的字符串、花括号、裸词
 _vdf_token_re = re.compile(r'"((?:[^"\\]|\\.)*)"|([{}])|([^\s{}"]+)')
 
 
-def parse_acf_installed_ids(text):
-    """从 ACF（Valve KeyValues）文本里取出已安装的 workshop ID 集合
+def parse_vdf(text):
+    """把 Valve KeyValues（VDF/ACF）文本解析成嵌套 dict
 
-    只读键名、不解析字段值：定位到 ACF_INSTALLED_SECTIONS 中的小节后，
-    把该小节下一级的子键当作物品 ID。文本被截断时返回已经解析到的部分，不抛异常。
+    只做只读提取，不校验格式：文本被截断（Steam 正在重写）时返回已经解析到的部分，
+    不抛异常。同名键重复出现时后面的覆盖前面的。
     """
-    ids = set()
-    stack = []
+    root = {}
+    stack = [root]
     pending = None
     for match in _vdf_token_re.finditer(text):
         token = match.group(1)
@@ -571,45 +576,200 @@ def parse_acf_installed_ids(text):
             token = match.group(3)
         brace = match.group(2)
         if brace == '{':
-            stack.append(pending or '')
-            if len(stack) == 3 and stack[1].lower() in ACF_INSTALLED_SECTIONS and stack[2]:
-                ids.add(stack[2])
+            if pending is None:
+                node = stack[-1]  # 文件直接以 { 开头（没有包裹的键名）时就地展开
+            else:
+                node = {}
+                stack[-1][pending] = node
+            stack.append(node)
             pending = None
         elif brace == '}':
-            if stack:
+            if len(stack) > 1:
                 stack.pop()
             pending = None
         elif pending is None:
             pending = token
         else:
             # 上一个 token 是键，这个就是它的值，成对消费掉
+            stack[-1][pending] = token
             pending = None
-    return ids
+    return root
 
 
-def load_steam_installed_ids(acf_path):
-    """读取 Steam 安装记录里的 workshop ID 集合，读不到就返回空集合
+def _sections(app):
+    """把子节点按小写名索引，便于大小写不敏感地找小节"""
+    return {str(key).lower(): value for key, value in app.items() if isinstance(value, dict)}
 
-    这份数据只用于"保护"（避免把已经装好的壁纸当残留），所以任何失败都只降级为
-    只信 workshopcache.json，绝不中断扫描。
+
+def _first_section(sections, names):
+    for name in names:
+        if name in sections:
+            return sections[name]
+    return {}
+
+
+def parse_acf_record(text):
+    """从 ACF 文本里分离出「订阅记录」与「内容记录」，返回 (subscribed, installed)
+
+    subscribed：WorkshopItemsSubscribed 的键（存在时）∪ WorkshopItemDetails 里
+    subscribedby 非空且不为 '0' 的条目 —— 这才是"还在订阅"的依据。
+
+    installed：WorkshopItemsInstalled 的条目，只说明内容还在磁盘上（取消订阅后
+    残留的目录就属于这一类），仅供显示与诊断，绝不参与订阅判断。
     """
+    root = parse_vdf(text)
+    app = root.get('AppWorkshop')
+    if not isinstance(app, dict):
+        app = root
+    sections = _sections(app)
+
+    subscribed = {str(wid) for wid in _first_section(sections, ACF_SUBSCRIBED_SECTIONS)}
+    for wid, fields in _first_section(sections, ACF_DETAILS_SECTIONS).items():
+        if not isinstance(fields, dict):
+            continue
+        by = str(fields.get('subscribedby') or '').strip()
+        if by and by != '0':
+            subscribed.add(str(wid))
+
+    installed = {}
+    for wid, fields in _first_section(sections, ACF_INSTALLED_SECTIONS).items():
+        if isinstance(fields, dict):
+            installed[str(wid)] = fields
+    return subscribed, installed
+
+
+def load_steam_record(acf_path):
+    """读取 Steam 的 appworkshop ACF，返回 {'subscribed', 'installed', 'mtime', 'ok'}
+
+    读不到（文件不存在、Steam 正在重写、内容被截断）时返回空记录并置 ok=False，
+    由调用方决定如何降级——这里绝不抛异常。
+    """
+    record = {'subscribed': set(), 'installed': {}, 'mtime': 0.0, 'ok': False}
     if not acf_path or not os.path.isfile(acf_path):
-        return set()
+        return record
     try:
+        record['mtime'] = os.path.getmtime(acf_path)
         with open(acf_path, 'r', encoding='utf-8-sig', errors='replace') as f:
             text = f.read()
     except OSError as e:
-        logger.debug('读取 Steam 安装记录失败 (%s): %s', acf_path, e)
-        return set()
+        logger.debug('读取 Steam 记录失败 (%s): %s', acf_path, e)
+        return record
 
-    ids = parse_acf_installed_ids(text)
-    logger.debug('Steam 安装记录 %s: %d 条', acf_path, len(ids))
-    return ids
+    record['subscribed'], record['installed'] = parse_acf_record(text)
+    record['ok'] = True
+    logger.debug(
+        'Steam 记录 %s: 订阅 %d 条，安装 %d 条',
+        acf_path, len(record['subscribed']), len(record['installed']),
+    )
+    return record
 
 
-# 目录在这么久之内被改动过就不参与删除，兜住"Steam 已建目录但还没写安装记录"的下载窗口。
+def installed_sizes(record):
+    """从内容记录里取每个 ID 的占用字节数（只用于显示），解析不了的跳过"""
+    sizes = {}
+    for wid, fields in (record.get('installed') or {}).items():
+        try:
+            sizes[str(wid)] = int(str(fields.get('size') or '').strip())
+        except (AttributeError, TypeError, ValueError):
+            continue
+    return sizes
+
+
+def load_subscription_context(json_path, workshop_dir):
+    """读齐扫描/删除所需的订阅信息，「谁更新就信谁」的策略集中在这里
+
+    返回 {'subscriptions', 'protected', 'disputed', 'complete', 'installed_sizes',
+          'steam', 'cache_mtime', 'steam_fresh'}
+
+    protected = workshopcache.json 的订阅 ∪ 可采信的 Steam 订阅记录。Steam 的 ACF 只在
+    它比 WE 缓存更新时才被采信：更旧的 ACF 里那条 subscribedby 已经过期（刚取消订阅
+    就是这个状态，Steam 还没重写文件），此时以缓存为准，否则残留会被一直当成已订阅。
+
+    complete = Steam 记录可信、且内容记录里有它的 ID —— 说明下载早已装完，
+    删除时不必再按"可能正在下载"等一轮。
+    """
+    subscriptions = load_subscriptions(json_path)
+    steam = load_steam_record(steam_acf_path(workshop_dir))
+    try:
+        cache_mtime = os.path.getmtime(json_path)
+    except OSError:
+        cache_mtime = 0.0
+
+    steam_fresh = bool(steam['ok']) and steam['mtime'] >= cache_mtime
+    protected = set(subscriptions)
+    disputed = set()
+    if steam_fresh:
+        protected |= steam['subscribed']
+    else:
+        disputed = steam['subscribed'] - set(subscriptions)
+
+    return {
+        'subscriptions': subscriptions,
+        'protected': protected,
+        'disputed': disputed,
+        'complete': set(steam['installed']) if steam_fresh else set(),
+        'installed_sizes': installed_sizes(steam),
+        'steam': steam,
+        'cache_mtime': cache_mtime,
+        'steam_fresh': steam_fresh,
+    }
+
+
+def describe_steam_record(context):
+    """把 Steam 记录的状态整理成给用户看的日志行 [(level, message), ...]"""
+    steam = context['steam']
+    subscriptions = context['subscriptions']
+    lines = []
+
+    if not steam['ok']:
+        lines.append(('warn', '读不到 Steam 的订阅记录（appworkshop ACF），本次不做交叉核对'))
+    elif context['steam_fresh']:
+        pending = steam['subscribed'] - set(subscriptions)
+        lines.append((
+            'info',
+            f"Steam 订阅记录: {len(steam['subscribed'])} 条"
+            + (f'，其中 {len(pending)} 条还没进订阅缓存' if pending else ''),
+        ))
+    else:
+        lines.append(('info', 'Steam 记录比 Wallpaper Engine 缓存旧，本次以缓存为准'))
+        if context['disputed']:
+            lines.append((
+                'warn',
+                f"有 {len(context['disputed'])} 个目录 Steam 记录仍标记为已订阅，"
+                '但 Steam 记录较旧，已按缓存判为待清理',
+            ))
+
+    leftovers = set(steam['installed']) - set(subscriptions) - steam['subscribed']
+    if leftovers:
+        lines.append(('debug', f'Steam 安装记录里有 {len(leftovers)} 条内容已不在订阅列表'))
+    return lines
+
+
+PROJECT_JSON_MAX_BYTES = 1024 * 1024
+
+
+def read_project_title(folder):
+    """从壁纸目录的 project.json 读标题；读不到返回 ''
+
+    订阅缓存里没有这个 ID 时（刚下载、WE 还没收录）用它兜底，避免标题显示成未知。
+    """
+    path = os.path.join(folder, 'project.json')
+    try:
+        if os.path.getsize(path) > PROJECT_JSON_MAX_BYTES:
+            return ''
+        with open(path, 'r', encoding='utf-8-sig', errors='replace') as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return ''
+    if not isinstance(data, dict):
+        return ''
+    return str(data.get('title') or '').strip()
+
+
+# 目录在这么久之内被改动过就不参与删除，兜住"正在下载、两边都还没有记录"的窗口。
 # 取 30 分钟是因为 WE 缓存的滞后可能长达几十分钟（实测有 37 分钟才刷新的），
 # 而误跳过只是让残留晚一轮清理，误删则要找回收站。
+# Steam 记录里已写明内容装完的不受此限（见 load_subscription_context 的 complete）。
 FRESH_DOWNLOAD_GRACE_SECONDS = 1800
 
 
@@ -760,7 +920,7 @@ def _emit(on_progress, done, total, message, level='info'):
 
 
 def scan(workshop_dir, subscriptions, json_path='', config_file='', on_progress=None, max_workers=8,
-         extra_subscribed=None):
+         extra_subscribed=None, extra_sizes=None):
     """扫描 workshop 目录并按订阅状态分类，不删除任何内容
 
     分类规则：
@@ -769,13 +929,14 @@ def scan(workshop_dir, subscriptions, json_path='', config_file='', on_progress=
     - unknown:    非纯数字目录名且未订阅（来源不明，默认不勾选）
     - missing:    订阅列表中但磁盘上没有对应目录
 
-    extra_subscribed 是额外的「已订阅」来源（Steam 安装记录）。刚下载完的壁纸可能
-    还没写进 workshopcache.json，但 Steam 已经记下了安装记录，靠它避免误判成残留。
+    extra_subscribed 是额外的「已订阅」来源（可采信的 Steam 订阅记录），用于兜住刚下载、
+    WE 缓存还没收录的壁纸；extra_sizes 是它对应的占用字节数，仅用于补齐显示。
     """
     if not os.path.isdir(workshop_dir):
         raise ScanError(f'workshop目录不存在: {workshop_dir}')
 
     extra = set(extra_subscribed or ())
+    sizes = extra_sizes or {}
 
     subscribed, orphans, unknown = [], [], []
     for name in os.listdir(workshop_dir):
@@ -783,15 +944,19 @@ def scan(workshop_dir, subscriptions, json_path='', config_file='', on_progress=
         if not os.path.isdir(path):
             continue
         if name in subscriptions or name in extra:
-            # 只在 Steam 安装记录里出现时没有标题和标注大小，保持与缓存缺失时一致
             info = subscriptions.get(name) or {}
+            # 缓存里还没有它（刚下载）时，标题读壁纸自己的 project.json，大小取 Steam 记录
+            title = info.get('title') or read_project_title(path) or '未知'
+            declared = info.get('size') or ''
+            if not declared and name in sizes:
+                declared = format_size(sizes[name])
             subscribed.append({
                 'wid': name,
                 'path': path,
                 'size_bytes': 0,
                 'kind': 'subscribed',
-                'title': info.get('title') or '未知',
-                'declared_size': info.get('size') or '未知',
+                'title': title,
+                'declared_size': declared or '未知',
             })
         elif name.isdigit():
             orphans.append({
