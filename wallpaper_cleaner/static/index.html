@@ -61,6 +61,7 @@
     <p class="hint">
       只清理已取消订阅的壁纸残留，正在使用的壁纸不会被触碰。
       标记为 <span class="badge unknown">无法确定的文件夹</span> 的来源不明，默认不勾选，需要时请手动勾选。
+      点标题可在资源管理器中打开该壁纸所在的文件夹。
     </p>
     <div class="tablewrap" id="orphan-wrap">
       <table>
@@ -92,7 +93,10 @@
       <span class="chev" aria-hidden="true">▸</span>
     </button>
     <div class="hidden" id="subscribed-body">
-      <input type="search" class="search" id="sub-filter" placeholder="按 workshop ID 或标题筛选…">
+      <div class="sub-tools">
+        <input type="search" class="search" id="sub-filter" placeholder="按 workshop ID 或标题筛选…">
+        <span class="sub-hint">点标题打开文件夹</span>
+      </div>
       <div class="tablewrap" id="sub-wrap">
         <table>
           <thead>

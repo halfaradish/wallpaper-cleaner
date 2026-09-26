@@ -321,7 +321,9 @@ td.col-size { font-family: var(--mono); font-size: 12px; color: var(--text-dim);
 /* 标题文字可点：用资源管理器打开这张壁纸的目录。只有文字本身是热区，
    整行仍然是勾选与 hover 选中态的地盘。
    截断必须落在行内盒子上：td 的 max-width 在表格布局里不生效（列宽由内容撑），
-   所以超长标题会一直把表格撑宽。完整标题在 title 属性里，悬停可见。 */
+   所以超长标题会一直把表格撑宽。完整标题在 title 属性里，悬停可见。
+   下划线是常驻的：只靠悬停才出现的提示，用户得先碰到才知道这里能点；
+   平时用很淡的点线（只表示「这里可点」），悬停再变实线加亮，反馈反而更明确。 */
 .title-link {
   display: inline-block;
   max-width: 380px;
@@ -330,9 +332,17 @@ td.col-size { font-family: var(--mono); font-size: 12px; color: var(--text-dim);
   white-space: nowrap;
   vertical-align: bottom;
   cursor: pointer;
+  text-decoration: underline dotted;
+  text-decoration-color: rgba(174, 183, 198, 0.4);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
 }
 
-.title-link:hover { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
+.title-link:hover {
+  color: var(--text);
+  text-decoration-style: solid;
+  text-decoration-color: currentColor;
+}
 
 /* 「占用大小」列头可点：三态循环排序（默认 → 大到小 → 小到大）。
    只有这一列是按钮，别的列头保持静态文字——整片表头都可点会让人以为点哪儿都能排序。
@@ -441,6 +451,12 @@ img.thumb { cursor: zoom-in; }
   border: 1px solid var(--border-strong);
   border-radius: 6px;
 }
+
+/* 搜索框右侧那句「点标题打开文件夹」：和搜索框同一行，靠 flex 让输入框自己缩一点，
+   卡片与表格的尺寸都不受影响 */
+.sub-tools { display: flex; align-items: center; gap: 12px; margin: 14px 18px 0; }
+.sub-tools .search { flex: 1 1 auto; width: auto; margin: 0; }
+.sub-hint { flex: none; font-size: 12px; color: var(--muted); white-space: nowrap; }
 
 .search:focus, .field input:focus { outline: none; border-color: var(--accent); }
 
@@ -725,6 +741,8 @@ img.thumb { cursor: zoom-in; }
   th, td { padding: 8px 12px; }
   .col-kind { display: none; }
   td.col-kind { display: none; }
+  /* 窄屏下这一行放不下两句，让搜索框占满；待清理卡片里那句说明一直都在 */
+  .sub-hint { display: none; }
 }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
