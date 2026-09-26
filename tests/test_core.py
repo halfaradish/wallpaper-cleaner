@@ -323,6 +323,38 @@ class TestScan(SandboxTestCase):
         # 订阅项带上缓存里的标题与标注大小
         self.assertEqual(result['subscribed'][0]['title'], '壁纸 1111111111')
 
+    def test_orphan_gets_title_from_project_json(self):
+        """残留目录里也有作者发布的 project.json，要显示标题而不是只有一串数字"""
+        workshop_dir, json_path, subscriptions = self.make_workshop(orphans=['2250930375'])
+        self.write(
+            os.path.join(workshop_dir, '2250930375', 'project.json'),
+            json.dumps({'title': 'Ahegao Collage 4k Ultimate', 'type': 'scene'}),
+        )
+
+        result = core.scan(workshop_dir, subscriptions)
+
+        entry = result['orphans'][0]
+        self.assertEqual(entry['title'], 'Ahegao Collage 4k Ultimate')
+        self.assertEqual(entry['wp_type'], 'scene')
+
+    def test_unknown_folder_gets_title_too(self):
+        workshop_dir, json_path, subscriptions = self.make_workshop(unknown=['backup-old'])
+        self.write(
+            os.path.join(workshop_dir, 'backup-old', 'project.json'),
+            json.dumps({'title': '手动备份的壁纸', 'type': 'video'}),
+        )
+
+        result = core.scan(workshop_dir, subscriptions)
+
+        self.assertEqual(result['unknown'][0]['title'], '手动备份的壁纸')
+        self.assertEqual(result['unknown'][0]['wp_type'], 'video')
+
+    def test_orphan_without_project_json_has_empty_title(self):
+        workshop_dir, json_path, subscriptions = self.make_workshop(orphans=['3333333333'])
+        result = core.scan(workshop_dir, subscriptions)
+        self.assertEqual(result['orphans'][0]['title'], '')
+        self.assertEqual(result['orphans'][0]['wp_type'], '')
+
     def test_missing_reported(self):
         workshop_dir, json_path, subscriptions = self.make_workshop(
             subscribed_ids=['1111111111'],
@@ -535,6 +567,48 @@ class TestSubscriptionContext(SandboxTestCase):
         self.assertIn('安装记录里有 1 条内容已不在订阅列表', text)
 
 
+class TestProjectMeta(SandboxTestCase):
+    def make_folder(self, text=None):
+        folder = os.path.join(self.tmp, 'wp')
+        os.makedirs(folder, exist_ok=True)
+        if text is not None:
+            self.write(os.path.join(folder, 'project.json'), text)
+        return folder
+
+    def test_reads_title_and_type(self):
+        folder = self.make_folder(json.dumps({'title': '神里绫华-X-Ray-ほうき星', 'type': 'scene'}))
+        self.assertEqual(
+            core.read_project_meta(folder),
+            {'title': '神里绫华-X-Ray-ほうき星', 'type': 'scene'},
+        )
+
+    def test_missing_file_returns_empty(self):
+        self.assertEqual(core.read_project_meta(self.make_folder()), {'title': '', 'type': ''})
+
+    def test_broken_json_returns_empty(self):
+        self.assertEqual(
+            core.read_project_meta(self.make_folder('{ not json')), {'title': '', 'type': ''}
+        )
+
+    def test_non_dict_json_returns_empty(self):
+        self.assertEqual(core.read_project_meta(self.make_folder('[1, 2]')), {'title': '', 'type': ''})
+
+    def test_oversized_file_is_skipped(self):
+        folder = self.make_folder()
+        path = os.path.join(folder, 'project.json')
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write('x' * (core.PROJECT_JSON_MAX_BYTES + 1))
+        self.assertEqual(core.read_project_meta(folder), {'title': '', 'type': ''})
+
+
+class TestItemLabel(unittest.TestCase):
+    def test_with_and_without_title(self):
+        self.assertEqual(core.item_label({'wid': '123', 'title': '神里绫华'}), '123（神里绫华）')
+        self.assertEqual(core.item_label({'wid': '123', 'title': ''}), '123')
+        self.assertEqual(core.item_label({'wid': '123', 'title': '   '}), '123')
+        self.assertEqual(core.item_label({'wid': '123'}), '123')
+
+
 class TestScanDisplayFallback(SandboxTestCase):
     def test_title_and_size_fall_back_to_folder_and_steam_record(self):
         """缓存里还没有标题时，用壁纸自己的 project.json 和 Steam 记录的占用大小补上"""
@@ -551,6 +625,7 @@ class TestScanDisplayFallback(SandboxTestCase):
                            extra_sizes={wid: 54567690})
         entry = [i for i in result['subscribed'] if i['wid'] == wid][0]
         self.assertEqual(entry['title'], '神里绫华-X-Ray-ほうき星')
+        self.assertEqual(entry['wp_type'], 'scene')
         self.assertEqual(entry['declared_size'], core.format_size(54567690))
         self.assertEqual(result['orphans'], [])
 
