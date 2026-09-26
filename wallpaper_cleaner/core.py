@@ -748,22 +748,26 @@ def describe_steam_record(context):
 PROJECT_JSON_MAX_BYTES = 1024 * 1024
 
 
-def read_project_title(folder):
-    """从壁纸目录的 project.json 读标题；读不到返回 ''
+def read_project_meta(folder):
+    """从壁纸目录的 project.json 读标题与类型，返回 {'title', 'type'}
 
-    订阅缓存里没有这个 ID 时（刚下载、WE 还没收录）用它兜底，避免标题显示成未知。
+    project.json 是作者随内容一起发布的，就躺在目录里，与订阅状态无关——
+    已取消订阅的残留也能读到名字。读不到（缺失、坏文件、过大）时返回空字符串。
     """
     path = os.path.join(folder, 'project.json')
     try:
         if os.path.getsize(path) > PROJECT_JSON_MAX_BYTES:
-            return ''
+            return {'title': '', 'type': ''}
         with open(path, 'r', encoding='utf-8-sig', errors='replace') as f:
             data = json.load(f)
     except (OSError, ValueError):
-        return ''
+        return {'title': '', 'type': ''}
     if not isinstance(data, dict):
-        return ''
-    return str(data.get('title') or '').strip()
+        return {'title': '', 'type': ''}
+    return {
+        'title': str(data.get('title') or '').strip(),
+        'type': str(data.get('type') or '').strip(),
+    }
 
 
 # 目录在这么久之内被改动过就不参与删除，兜住"正在下载、两边都还没有记录"的窗口。
@@ -817,6 +821,13 @@ def format_size(size_bytes):
             return f'{size_bytes:.2f} {unit}'
         size_bytes /= 1024
     return f'{size_bytes:.2f} PB'
+
+
+def item_label(item):
+    """给日志与提示用的名字：`ID（标题）`，没有标题时只有 ID"""
+    title = (item.get('title') or '').strip()
+    wid = str(item.get('wid', ''))
+    return f'{wid}（{title}）' if title else wid
 
 
 def ask_yes_no(prompt, ascii_prompt):
@@ -945,8 +956,12 @@ def scan(workshop_dir, subscriptions, json_path='', config_file='', on_progress=
             continue
         if name in subscriptions or name in extra:
             info = subscriptions.get(name) or {}
-            # 缓存里还没有它（刚下载）时，标题读壁纸自己的 project.json，大小取 Steam 记录
-            title = info.get('title') or read_project_title(path) or '未知'
+            title = info.get('title') or ''
+            wp_type = ''
+            if not title:
+                # 缓存里还没有它（刚下载）时读壁纸自己的 project.json，大小取 Steam 记录
+                meta = read_project_meta(path)
+                title, wp_type = meta['title'], meta['type']
             declared = info.get('size') or ''
             if not declared and name in sizes:
                 declared = format_size(sizes[name])
@@ -955,18 +970,22 @@ def scan(workshop_dir, subscriptions, json_path='', config_file='', on_progress=
                 'path': path,
                 'size_bytes': 0,
                 'kind': 'subscribed',
-                'title': title,
+                'title': title or '未知',
                 'declared_size': declared or '未知',
+                'wp_type': wp_type,
             })
         elif name.isdigit():
+            # 残留目录里也有作者发布的 project.json，用它把标题补上，别只显示一串数字
+            meta = read_project_meta(path)
             orphans.append({
                 'wid': name, 'path': path, 'size_bytes': 0, 'kind': 'orphan',
-                'title': '', 'declared_size': '',
+                'title': meta['title'], 'declared_size': '', 'wp_type': meta['type'],
             })
         else:
+            meta = read_project_meta(path)
             unknown.append({
                 'wid': name, 'path': path, 'size_bytes': 0, 'kind': 'unknown',
-                'title': '', 'declared_size': '',
+                'title': meta['title'], 'declared_size': '', 'wp_type': meta['type'],
             })
 
     # 目录大小计算是纯磁盘 I/O，用线程池并行（os.scandir 不持有 GIL）
