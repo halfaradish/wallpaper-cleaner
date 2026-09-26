@@ -914,6 +914,17 @@ def force_rmtree(path):
     shutil.rmtree(path)
 
 
+def open_folder(path):
+    """用系统文件管理器打开目录（Windows 下就是资源管理器），失败抛 OSError
+
+    面板「点标题打开目录」用的就是它：把路径交给系统去打开，不读取、不解析、
+    不改动目录里的任何东西。
+    """
+    if sys.platform != 'win32':
+        raise OSError('当前系统不支持打开文件夹')
+    os.startfile(path)
+
+
 def send_to_recycle_bin(path):
     """把文件/目录移入回收站（Windows Shell API，纯标准库），成功返回 True
 
