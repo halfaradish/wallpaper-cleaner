@@ -533,6 +533,24 @@ class TestSubscriptionContext(SandboxTestCase):
         self.assertIn('9999999999', context['protected'])
         self.assertEqual(context['installed_sizes']['3115163440'], 1536)
 
+    def test_complete_survives_a_stale_acf(self):
+        """回归：ACF 比缓存旧时，内容记录仍然算数——"装完"不会因为缓存被重写而失效
+
+        否则刚取消订阅（WE 刚重写缓存、Steam 还没重写 ACF）时，30 分钟新鲜度守卫
+        会对早已下载完的残留生效，出现"清理 0 项、跳过 N 个"。
+        """
+        workshop_dir, json_path = self.make_layout(
+            cache_ids=['826336550'], acf_text=ACF_SAMPLE, acf_age=600, cache_age=0)
+        context = core.load_subscription_context(json_path, workshop_dir)
+
+        self.assertFalse(context['steam_fresh'])
+        self.assertEqual(context['complete'], ACF_INSTALLED_IDS)
+
+    def test_complete_is_empty_without_acf(self):
+        workshop_dir, json_path = self.make_layout(cache_ids=['826336550'], acf_text=None)
+        context = core.load_subscription_context(json_path, workshop_dir)
+        self.assertEqual(context['complete'], set())
+
     def test_leftover_is_reported_as_orphan(self):
         """端到端回归：WE 缓存已移除 + Steam 记录较旧 → 必须报成待清理"""
         workshop_dir, json_path = self.make_layout(

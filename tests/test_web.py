@@ -202,6 +202,41 @@ class TestDeleteGuards(DeleteGuardTestCase):
         self.assertEqual(len(outcome['deleted']), 1)
         self.assertFalse(os.path.exists(folder))
 
+    def test_completion_record_counts_even_when_acf_is_older(self):
+        """回归：WE 刚重写缓存、Steam 还没重写 ACF 时，内容记录仍然有效
+
+        这正是"刚取消订阅 → 重新扫描 → 清理选中"报「已清理 0 项、跳过 2 个」的场景：
+        ACF 比缓存旧只说明订阅声明过期，不代表内容没装完。
+        """
+        self.write_cache([])
+        folder = self.make_folder('3611425904')  # mtime 就是现在
+        self.write_acf(installed_ids=['3611425904'], age_seconds=600)  # ACF 比缓存旧
+
+        scan, items = self.scan_items(['3611425904'])
+        self.assertEqual(len(items), 1)
+
+        outcome, _job = self.run_delete(scan, items)
+
+        self.assertEqual(outcome['skipped'], [])
+        self.assertEqual(len(outcome['deleted']), 1)
+        self.assertFalse(os.path.exists(folder))
+
+    def test_skipped_items_are_reported_by_reason(self):
+        """跳过原因要分开报，面板才能说清是「仍在订阅」还是「刚改动过」"""
+        self.write_cache([])
+        self.make_folder('3611425904')  # 刚改动过、没有完成记录 → 会被守卫拦下
+        self.make_folder('2222222222')
+        scan, items = self.scan_items(['3611425904', '2222222222'])
+        self.assertEqual(len(items), 2)
+
+        self.write_cache(['2222222222'])  # 扫描之后它又被重新订阅了
+        outcome, _job = self.run_delete(scan, items)
+
+        self.assertEqual(outcome['skipped_subscribed'], ['2222222222'])
+        self.assertEqual(outcome['skipped_fresh'], ['3611425904'])
+        self.assertEqual(outcome['skipped'], ['2222222222', '3611425904'])
+        self.assertEqual(outcome['deleted'], [])
+
     def test_folder_resubscribed_after_scan_is_skipped(self):
         self.write_cache([])
         folder = self.make_folder('3115163440',
