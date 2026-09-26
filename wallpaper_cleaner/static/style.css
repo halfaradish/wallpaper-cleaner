@@ -209,6 +209,18 @@ main {
 .card-head h2 { font-size: 14px; display: flex; align-items: center; gap: 8px; }
 .card-tools { display: flex; align-items: center; gap: 12px; }
 
+/* 这个按钮的文案会随选中数量变化（「清理选中」↔「清理选中 12 项 · 345.67 MB」），
+   而它所在的这一组是靠右锚定的：按钮一变宽，整组就往左推，左边的「全选已取消订阅」
+   跟着漂（实测空选 ↔ 选中 12 项相差 106px），连续勾选时鼠标落点会偏。
+   留够最长文案的宽度——实测「清理选中 999 项 · 999.99 GB」为 193px——数字怎么变
+   都不再动布局。用 min-width 而不是 width：真出现四位数文案时按钮自然变宽，
+   而不是把文字挤出去。 */
+#btn-delete {
+  min-width: 196px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
 .count {
   font-family: var(--mono);
   font-size: 12px;
