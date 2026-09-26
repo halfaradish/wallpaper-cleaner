@@ -203,9 +203,13 @@ function renderOrphans() {
   body.innerHTML = items.map((item) => {
     const checked = state.selected.has(item.wid);
     const kindLabel = item.kind === 'orphan' ? '已取消订阅' : '无法确定的文件夹';
+    // 标题来自残留目录自己的 project.json，取不到就显示占位符
+    const title = item.title || '';
+    const type = item.wp_type ? ` <span class="wp-type">· ${esc(item.wp_type)}</span>` : '';
     return `<tr class="${checked ? 'selected' : ''}">
       <td class="col-check"><input type="checkbox" data-wid="${esc(item.wid)}"${checked ? ' checked' : ''}></td>
       <td class="wid">${esc(item.wid)}</td>
+      <td class="title-cell" title="${esc(title)}">${esc(title || '—')}${type}</td>
       <td class="col-kind"><span class="badge ${item.kind}">${kindLabel}</span></td>
       <td class="col-size">${fmtSize(item.size_bytes)}</td>
     </tr>`;
@@ -500,8 +504,12 @@ function openConfirm() {
   $('confirm-size').textContent = fmtSize(bytes);
 
   const shown = chosen.slice(0, 40);
-  const rows = shown.map((i) =>
-    `<li><span>${esc(i.wid)}${i.kind === 'unknown' ? '（无法确定的文件夹）' : ''}</span><span>${fmtSize(i.size_bytes)}</span></li>`);
+  const rows = shown.map((i) => {
+    // 删除前的最后一眼，带上标题才认得出是什么
+    const name = i.title ? ` · ${esc(i.title)}` : '';
+    const note = i.kind === 'unknown' ? '（无法确定的文件夹）' : '';
+    return `<li><span>${esc(i.wid)}${name}${note}</span><span>${fmtSize(i.size_bytes)}</span></li>`;
+  });
   if (chosen.length > shown.length) {
     rows.push(`<li class="more">…… 另有 ${chosen.length - shown.length} 个文件夹</li>`);
   }

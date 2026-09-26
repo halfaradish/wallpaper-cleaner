@@ -241,7 +241,7 @@ def _delete_worker(state, job, scan, items, recycle):
     revived = [i for i in items if i['wid'] in protected]
     rest = [i for i in items if i['wid'] not in protected]
     for item in revived:
-        emit(0, total, f"跳过 {item['wid']}：该壁纸仍处于订阅或已安装状态", 'warn')
+        emit(0, total, f"跳过 {core.item_label(item)}：该壁纸仍处于订阅状态", 'warn')
 
     # 目录刚被改动过说明可能还在下载，先放过这一轮；
     # 但 Steam 记录可信且已写明内容装完时，就不是"正在下载"，不必再等
@@ -252,7 +252,7 @@ def _delete_worker(state, job, scan, items, recycle):
     fresh_wids = {i['wid'] for i in fresh}
     targets = [i for i in rest if i['wid'] not in fresh_wids]
     for item in fresh:
-        emit(0, total, f"跳过 {item['wid']}：目录在 {grace_minutes} 分钟内被改动过，"
+        emit(0, total, f"跳过 {core.item_label(item)}：目录在 {grace_minutes} 分钟内被改动过，"
                        '可能是正在下载的壁纸', 'warn')
 
     if not targets:
