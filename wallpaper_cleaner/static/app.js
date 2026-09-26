@@ -567,11 +567,19 @@ async function doDelete() {
     const deleted = (result.deleted || []).length;
     const failed = (result.failed || []).length;
     const skipped = (result.skipped || []).length;
+    const skippedSub = (result.skipped_subscribed || []).length;
+    const skippedFresh = (result.skipped_fresh || []).length;
     state.selected.clear();
     await loadState();
 
     let message = `已清理 ${deleted} 项，释放 ${fmtSize(result.freed_bytes || 0)}`;
-    if (skipped) message += `，跳过 ${skipped} 个（仍处于订阅或刚下载状态）`;
+    if (skipped) {
+      // 分开说清是被订阅状态拦下的，还是目录刚改动过（后者稍后重试即可）
+      const parts = [];
+      if (skippedSub) parts.push(`${skippedSub} 个仍在订阅`);
+      if (skippedFresh) parts.push(`${skippedFresh} 个目录刚改动过，稍后可重试`);
+      message += parts.length ? `，跳过 ${skipped} 个（${parts.join('；')}）` : `，跳过 ${skipped} 个`;
+    }
     if (failed) message += `，失败 ${failed} 个`;
     toast(message, failed ? 'error' : 'ok');
   }, () => {

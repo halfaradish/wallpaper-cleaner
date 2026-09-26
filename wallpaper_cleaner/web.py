@@ -265,7 +265,10 @@ def _delete_worker(state, job, scan, items, recycle):
             targets, scan['workshop_dir'], to_recycle_bin=recycle, on_progress=emit
         )
 
+    # skipped 仍是全部跳过项；另外按原因分开报，面板才能把提示说清楚
     outcome['skipped'] = [i['wid'] for i in revived + fresh]
+    outcome['skipped_subscribed'] = [i['wid'] for i in revived]
+    outcome['skipped_fresh'] = [i['wid'] for i in fresh]
     with state.lock:
         # 磁盘内容已变化，旧扫描结果作废，避免下一次删除基于过期列表
         state.last_scan = None
