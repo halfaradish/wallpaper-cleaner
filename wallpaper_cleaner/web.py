@@ -47,13 +47,20 @@ CONTENT_TYPES = {
     '.js': 'application/javascript; charset=utf-8',
     '.css': 'text/css; charset=utf-8',
 }
+# 缩略图按扩展名精确给类型：响应带 nosniff，类型给错浏览器就直接不渲染
+PREVIEW_CONTENT_TYPES = {
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.gif': 'image/gif',
+}
 
 MAX_JOB_LINES = 400
 MAX_KEPT_JOBS = 20
 MAX_BODY_BYTES = 256 * 1024
 
 # 前端轮询与静态资源的请求量很大，不写进日志，否则会把日志刷满
-_quiet_request = re.compile(r'^/(favicon\.ico|static/)|^/api/(job/|state)')
+_quiet_request = re.compile(r'^/(favicon\.ico|static/)|^/api/(job/|state|thumb)')
 
 
 def _line(level, text):
@@ -292,15 +299,24 @@ class PanelHandler(BaseHTTPRequestHandler):
             return
         core.logger.debug('[面板] %s %s', self.address_string(), fmt % args)
 
-    def _send_bytes(self, data, content_type, status=200):
+    def _send_bytes(self, data, content_type, status=200, cache='no-store', etag=None):
         self.send_response(status)
         self.send_header('Content-Type', content_type)
         self.send_header('Content-Length', str(len(data)))
-        self.send_header('Cache-Control', 'no-store')
+        self.send_header('Cache-Control', cache)
+        if etag:
+            self.send_header('ETag', etag)
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.end_headers()
         if self.command != 'HEAD':
             self.wfile.write(data)
+
+    def _send_not_modified(self, cache, etag):
+        """304：浏览器手里那份还能用，不回正文"""
+        self.send_response(304)
+        self.send_header('Cache-Control', cache)
+        self.send_header('ETag', etag)
+        self.end_headers()
 
     def _send_json(self, payload, status=200):
         self._send_bytes(
@@ -398,6 +414,8 @@ class PanelHandler(BaseHTTPRequestHandler):
             return self._serve_static(path[len('/static/'):])
         if path == '/api/state':
             return self._send_json(self._state_payload())
+        if path == '/api/thumb':
+            return self._serve_thumb(parse_qs(parsed.query))
         if path == '/api/logs':
             query = parse_qs(parsed.query)
             try:
@@ -547,6 +565,56 @@ class PanelHandler(BaseHTTPRequestHandler):
             'json_path': auto_json,
             'workshop_dir': auto_workshop,
         })
+
+    # ---------- 缩略图 ----------
+
+    def _scan_item(self, wid):
+        """在最近一次扫描结果里按 ID 找条目，找不到返回 None
+
+        路径与预览图文件名都取自我们自己的扫描结果，绝不接受请求里带来的路径：
+        接口只有「ID 形状校验 + 查扫描结果」两道输入检查，比"先拼路径再校验"更难写错。
+        """
+        state = self.server.state
+        with state.lock:
+            scan = state.last_scan
+        if not scan:
+            return None
+        for key in ('orphans', 'unknown', 'subscribed'):
+            for item in scan.get(key) or ():
+                if item.get('wid') == wid:
+                    return item
+        return None
+
+    def _serve_thumb(self, query):
+        """发壁纸目录里的预览图字节，解码与缩放交给浏览器"""
+        wid = (query.get('wid') or [''])[0]
+        if not core.is_safe_wid(wid):
+            return self._send_json({'error': '非法的 workshop ID'}, 404)
+
+        item = self._scan_item(wid)
+        if item is None:
+            # 未扫描、已删除，或改过配置导致旧结果作废
+            return self._send_json({'error': '该壁纸不在最近一次扫描结果里'}, 404)
+
+        path = core.resolve_preview_path(item.get('path') or '', item.get('preview') or '')
+        if not path:
+            return self._send_json({'error': '这个文件夹里没有可用的预览图'}, 404)
+        try:
+            with open(path, 'rb') as f:
+                data = f.read()
+            info = os.stat(path)
+        except OSError:
+            return self._send_json({'error': '预览图读不出来'}, 404)
+
+        # 列表每次重绘都会重建 <img>，没有缓存的话每次都要把这些图重拉一遍
+        cache = 'private, max-age=600'
+        etag = f'"{info.st_size:x}-{info.st_mtime_ns:x}"'
+        if self.headers.get('If-None-Match') == etag:
+            return self._send_not_modified(cache, etag)
+        content_type = PREVIEW_CONTENT_TYPES.get(
+            os.path.splitext(path)[1].lower(), 'application/octet-stream'
+        )
+        self._send_bytes(data, content_type, cache=cache, etag=etag)
 
     # ---------- 静态文件 ----------
 

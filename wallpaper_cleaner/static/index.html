@@ -67,6 +67,7 @@
         <thead>
           <tr>
             <th class="col-check"></th>
+            <th class="col-thumb">预览</th>
             <th>workshop ID</th>
             <th>标题</th>
             <th class="col-kind">类型</th>
@@ -90,6 +91,7 @@
         <table>
           <thead>
             <tr>
+              <th class="col-thumb">预览</th>
               <th>workshop ID</th>
               <th>标题</th>
               <th class="col-size">标注大小</th>
@@ -188,6 +190,11 @@
 </aside>
 
 <div class="toast hidden" id="toast"></div>
+
+<!-- 放大看预览图 -->
+<div class="lightbox hidden" id="lightbox">
+  <img id="lightbox-img" alt="">
+</div>
 
 <script>
   window.__PANEL_TOKEN__ = "__PANEL_TOKEN_VALUE__";

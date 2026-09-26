@@ -165,6 +165,33 @@ function renderStats() {
   $('stat-scanned-at').textContent = `扫描于 ${scan.scanned_at}`;
 }
 
+/* ---------------- 缩略图 ---------------- */
+
+// 预览图是作者随内容一起发布的、就躺在壁纸目录里（project.json 的 preview 字段），
+// 服务端只把字节发过来，解码、缩放、GIF 播放全交给浏览器
+function thumbCell(item) {
+  if (!item.preview) {
+    const label = item.wp_type ? esc(item.wp_type) : '—';
+    return `<td class="col-thumb"><span class="thumb thumb-empty"
+      title="这个文件夹里没有预览图">${label}</span></td>`;
+  }
+  const src = `/api/thumb?wid=${encodeURIComponent(item.wid)}`;
+  return `<td class="col-thumb"><img class="thumb" src="${src}" alt=""
+    loading="lazy" decoding="async" title="点击放大"></td>`;
+}
+
+function openLightbox(src) {
+  $('lightbox-img').src = src;
+  $('lightbox').classList.remove('hidden');
+}
+
+function closeLightbox() {
+  const box = $('lightbox');
+  if (box.classList.contains('hidden')) return;
+  box.classList.add('hidden');
+  $('lightbox-img').removeAttribute('src');
+}
+
 /* ---------------- 待清理列表 ---------------- */
 
 function renderOrphans() {
@@ -208,6 +235,7 @@ function renderOrphans() {
     const type = item.wp_type ? ` <span class="wp-type">· ${esc(item.wp_type)}</span>` : '';
     return `<tr class="${checked ? 'selected' : ''}">
       <td class="col-check"><input type="checkbox" data-wid="${esc(item.wid)}"${checked ? ' checked' : ''}></td>
+      ${thumbCell(item)}
       <td class="wid">${esc(item.wid)}</td>
       <td class="title-cell" title="${esc(title)}">${esc(title || '—')}${type}</td>
       <td class="col-kind"><span class="badge ${item.kind}">${kindLabel}</span></td>
@@ -288,6 +316,7 @@ function renderSubscribed() {
   wrap.classList.remove('hidden');
   empty.classList.add('hidden');
   body.innerHTML = items.map((item) => `<tr>
+    ${thumbCell(item)}
     <td class="wid">${esc(item.wid)}</td>
     <td class="title-cell" title="${esc(item.title)}">${esc(item.title)}</td>
     <td class="col-size">${esc(item.declared_size)}</td>
@@ -729,8 +758,31 @@ function bind() {
 
   $('opt-log-auto').addEventListener('change', syncLogTimer);
 
+  // 扫描之后目录被删掉或换掉时缩略图会 404，把坏图换成占位框，别留一个破图标
+  document.addEventListener('error', (e) => {
+    const img = e.target;
+    if (!img || img.tagName !== 'IMG' || !img.classList.contains('thumb')) return;
+    const span = document.createElement('span');
+    span.className = 'thumb thumb-empty';
+    span.title = '预览图读不出来了';
+    span.textContent = '—';
+    img.replaceWith(span);
+  }, true);
+
+  // 点缩略图放大看原图，点别处或按 Esc 关掉
+  document.addEventListener('click', (e) => {
+    const target = e.target;
+    const img = target && target.closest ? target.closest('img.thumb') : null;
+    if (img) {
+      openLightbox(img.src);
+    } else if (target === $('lightbox') || target === $('lightbox-img')) {
+      closeLightbox();
+    }
+  });
+
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
+    closeLightbox();
     closeConfirm();
     closeDrawer('advanced-drawer');
   });
