@@ -65,8 +65,8 @@ def _resolve_paths():
     return config['json_path'], config['workshop_dir']
 
 
-def _preview(result, outcome=None):
-    """--dry-run 输出：列出将要删除的内容"""
+def _preview(result, targets, held_back):
+    """--dry-run 输出：列出将要删除的内容，以及被安全校验拦下的内容"""
     logger.info('')
     logger.info('=' * 60)
     logger.info('  预览模式：以下内容不会被删除')
@@ -76,14 +76,43 @@ def _preview(result, outcome=None):
         logger.info(f'  待删除 {item["wid"]}  ({core.format_size(item["size_bytes"])})')
     for item in result['unknown']:
         logger.info(f'  待删除 {item["wid"]}  ({core.format_size(item["size_bytes"])})　[非数字目录]')
+    for wid, reason in held_back:
+        logger.info(f'  保留 {wid}　[{reason}]')
 
-    if not result['orphans'] and not result['unknown']:
+    if not targets and not held_back:
         logger.info('  没有需要清理的内容')
 
     logger.info('')
-    logger.info(f'待删除数量: {len(result["orphans"]) + len(result["unknown"])}')
-    logger.info(f'可释放空间: {core.format_size(result["orphan_bytes"] + result["unknown_bytes"])}')
+    logger.info(f'待删除数量: {len(targets)}')
+    logger.info(f'可释放空间: {core.format_size(sum(i["size_bytes"] for i in targets))}')
     logger.info('去掉 --dry-run 参数即可实际执行删除。')
+
+
+def _hold_back(targets, workshop_dir, json_path):
+    """删除前复核，返回 (可删除项, [(wid, 保留原因)])
+
+    CLI 没有确认环节，一旦判断失误就是永久删除，所以这里做两道检查：
+    1) 重新读订阅缓存和 Steam 安装记录，仍处于订阅/已安装状态的一律不删；
+    2) 目录刚被改动过的（可能还在下载）先放过一轮。
+    """
+    try:
+        subscriptions = core.load_subscriptions(json_path)
+    except core.SubscriptionError as e:
+        logger.error(f'删除前复核订阅列表失败，已中止：{e}')
+        sys.exit(1)
+    installed = core.load_steam_installed_ids(core.steam_acf_path(workshop_dir))
+    protected = set(subscriptions) | installed
+
+    remaining, held = [], []
+    for item in targets:
+        wid = item['wid']
+        if wid in protected:
+            held.append((wid, '仍处于订阅或已安装状态'))
+        elif core.is_freshly_downloaded(item.get('path') or ''):
+            held.append((wid, f'目录在 {core.FRESH_DOWNLOAD_GRACE_SECONDS // 60} 分钟内被改动过'))
+        else:
+            remaining.append(item)
+    return remaining, held
 
 
 def main(dry_run=False):
@@ -100,8 +129,20 @@ def main(dry_run=False):
     logger.info(f'已读取订阅缓存: {json_path}')
     logger.info(f'已订阅壁纸数量: {len(subscriptions)}')
 
+    # 第二个订阅来源：刚下载完的壁纸可能还没写进 WE 的缓存，但 Steam 已经记下安装记录
+    installed = core.load_steam_installed_ids(core.steam_acf_path(workshop_dir))
+    if installed:
+        pending = installed - set(subscriptions)
+        logger.info(
+            f'Steam 安装记录: {len(installed)} 条'
+            + (f'，其中 {len(pending)} 条还没进订阅缓存' if pending else '')
+        )
+    else:
+        logger.warning('读不到 Steam 安装记录，本次不做交叉核对（刚下载的壁纸可能被误判）')
+
     try:
-        result = core.scan(workshop_dir, subscriptions, json_path=json_path)
+        result = core.scan(workshop_dir, subscriptions, json_path=json_path,
+                           extra_subscribed=installed)
     except core.ScanError as e:
         logger.error(str(e))
         sys.exit(1)
@@ -116,9 +157,12 @@ def main(dry_run=False):
 
     # CLI 与旧版一致：未订阅的目录一律删除（面板里未知目录默认不勾选，更保守）
     targets = result['orphans'] + result['unknown']
+    targets, held_back = _hold_back(targets, workshop_dir, json_path)
+    for wid, reason in held_back:
+        logger.warning(f'跳过 {wid}：{reason}')
 
     if dry_run:
-        _preview(result)
+        _preview(result, targets, held_back)
         return 0
 
     def _progress(_done, _total, message, level='info'):
@@ -132,5 +176,7 @@ def main(dry_run=False):
     logger.info(f'扫描文件夹总数: {result["total_folders"]}')
     logger.info(f'保留文件夹数量: {len(result["subscribed"])}')
     logger.info(f'删除文件夹数量: {len(outcome["deleted"])}')
+    if held_back:
+        logger.info(f'安全校验保留数量: {len(held_back)}（详见上面的跳过日志）')
     logger.info(f'释放存储空间: {core.format_size(outcome["freed_bytes"])}')
     return 0
