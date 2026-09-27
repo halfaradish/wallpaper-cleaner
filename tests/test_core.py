@@ -710,6 +710,25 @@ class TestOpenFolder(unittest.TestCase):
                 core.open_folder('/some/dir')
 
 
+class TestOpenUrl(unittest.TestCase):
+    """steam:// 这类协议交给系统处理，面板的「启动 Steam」「手动取消订阅」都走它"""
+
+    def test_hands_the_url_to_the_system(self):
+        with mock.patch.object(core.os, 'startfile', create=True) as startfile:
+            core.open_url('steam://open/main')
+        startfile.assert_called_once_with('steam://open/main')
+
+    def test_workshop_item_url(self):
+        with mock.patch.object(core.os, 'startfile', create=True) as startfile:
+            core.open_url('steam://url/CommunityFilePage/3115163440')
+        startfile.assert_called_once_with('steam://url/CommunityFilePage/3115163440')
+
+    def test_unsupported_platform_raises_instead_of_silently_doing_nothing(self):
+        with mock.patch.object(core.sys, 'platform', 'linux'):
+            with self.assertRaises(OSError):
+                core.open_url('steam://open/main')
+
+
 class TestItemLabel(unittest.TestCase):
     def test_with_and_without_title(self):
         self.assertEqual(core.item_label({'wid': '123', 'title': '神里绫华'}), '123（神里绫华）')
@@ -962,6 +981,23 @@ class TestLoadConfig(SandboxTestCase):
         config = core.load_config()
         self.assertEqual(config['json_path'], os.path.join(self.tmp, 'a.json'))
         self.assertEqual(config['workshop_dir'], os.path.join(self.tmp, 'ws'))
+
+    def test_steam_dll_path_is_optional(self):
+        """取消订阅/重新订阅用的 dll 可以留空（自动查找），也可以指定文件或目录"""
+        self.write(core.config_path, 'json_path: a.json\nworkshop_dir: ws\n')
+        self.assertEqual(core.load_config()['steam_dll_path'], '')
+
+        self.write(core.config_path,
+                   'json_path: a.json\nworkshop_dir: ws\nsteam_dll_path: dlls\\steam_api64.dll\n')
+        self.assertEqual(
+            core.load_config()['steam_dll_path'],
+            os.path.join(self.tmp, 'dlls', 'steam_api64.dll'),
+        )
+
+    def test_default_template_mentions_the_new_key(self):
+        """新配置模板要带上这个键并解释用途，用户才知道它是干什么的"""
+        self.assertIn('steam_dll_path:', core.DEFAULT_CONFIG_TEMPLATE)
+        self.assertIn('取消订阅', core.DEFAULT_CONFIG_TEMPLATE)
 
 
 class TestFormatSize(unittest.TestCase):

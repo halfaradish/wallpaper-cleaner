@@ -113,11 +113,11 @@ class DeleteGuardTestCase(unittest.TestCase):
         items = [i for i in scan['orphans'] + scan['unknown'] if i['wid'] in wids]
         return scan, items
 
-    def run_delete(self, scan, items, recycle=False):
+    def run_delete(self, scan, items, recycle=False, just_resubscribed=()):
         """直接调面板的删除 worker（recycle=False 时是永久删除，所以只在沙箱里用）"""
         state = web.PanelState()
         job = {'lines': []}
-        outcome = web._delete_worker(state, job, scan, items, recycle)
+        outcome = web._delete_worker(state, job, scan, items, recycle, just_resubscribed)
         return outcome, job
 
 
@@ -563,6 +563,370 @@ class TestRevealEndpoint(PanelEndpointTestCase):
 
         self.assertEqual(status, 200)
         self.assertEqual(sorted(os.listdir(folder)), before)
+
+
+class SteamApiStub:
+    """把 steamapi 整体打桩：不加载任何真实 dll，也不连真实 Steam"""
+
+    def __init__(self, case, subscribed=(), unsubscribed_ok=True, subscribed_ok=True,
+                 connect_ok=True, connect_reason='ok', connect_detail='', confirm=True):
+        self.subscribed = set(subscribed)
+        self.confirm = confirm
+        patches = [
+            mock.patch.object(web.steamapi, 'connect',
+                              return_value=(connect_ok, connect_reason, connect_detail)),
+            mock.patch.object(web.steamapi, 'get_subscribed',
+                              side_effect=lambda: set(self.subscribed)),
+            mock.patch.object(web.steamapi, 'unsubscribe', return_value=unsubscribed_ok),
+            mock.patch.object(web.steamapi, 'subscribe', return_value=subscribed_ok),
+            mock.patch.object(web.steamapi, 'confirm_unsubscribed',
+                              side_effect=lambda wids, **kw: set(wids) if confirm else set()),
+            mock.patch.object(web.steamapi, 'confirm_subscribed',
+                              side_effect=lambda wids, **kw: set(wids) if confirm else set()),
+            mock.patch.object(web.steamapi, 'shutdown'),
+        ]
+        self.mocks = {}
+        for patcher in patches:
+            self.mocks[patcher.attribute] = patcher.start()
+            case.addCleanup(patcher.stop)
+
+    def unsubscribed_calls(self):
+        return [call.args[0] for call in self.mocks['unsubscribe'].call_args_list]
+
+    def subscribed_calls(self):
+        return [call.args[0] for call in self.mocks['subscribe'].call_args_list]
+
+
+class SteamWorkerTestCase(DeleteGuardTestCase):
+    """取消订阅/重新订阅 worker 的公共沙箱：路径与 Steam 全部打桩"""
+
+    def make_state(self):
+        state = web.PanelState()
+        paths = {
+            'json_path': self.json_path,
+            'workshop_dir': self.workshop_dir,
+            'steam_dll_path': '',
+        }
+        patcher = mock.patch.object(web, 'resolve_paths', return_value=paths)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return state
+
+    def scan_all(self):
+        context = core.load_subscription_context(self.json_path, self.workshop_dir)
+        return core.scan(
+            self.workshop_dir, context['subscriptions'], json_path=self.json_path,
+            extra_subscribed=context['protected'], extra_sizes=context['installed_sizes'],
+        )
+
+    def run_worker(self, worker, *args):
+        job = {'lines': []}
+        return worker(self.state, job, *args), job
+
+
+class TestUnsubscribeWorker(SteamWorkerTestCase):
+    def setUp(self):
+        super().setUp()
+        self.state = self.make_state()
+
+    def test_only_mode_leaves_the_files_alone(self):
+        """「仅取消订阅」不主动删任何东西：文件留给 Steam 自己处理"""
+        self.write_cache(['1111111111'])
+        folder = self.make_folder('1111111111')
+        stub = SteamApiStub(self, subscribed=['1111111111'])
+        scan = self.scan_all()
+
+        outcome, _job = self.run_worker(
+            web._unsubscribe_worker, scan, scan['subscribed'], 'only', False)
+
+        self.assertEqual(outcome['unsubscribed'], ['1111111111'])
+        self.assertEqual(stub.unsubscribed_calls(), ['1111111111'])
+        self.assertEqual(outcome['deleted'], [])
+        self.assertTrue(os.path.isdir(folder))
+        self.assertIn('1111111111', self.state.session_unsubscribed)
+
+    def test_with_delete_mode_removes_the_folder_after_confirmation(self):
+        self.write_cache(['1111111111'])
+        folder = self.make_folder('1111111111')
+        SteamApiStub(self, subscribed=['1111111111'])
+        scan = self.scan_all()
+
+        outcome, _job = self.run_worker(
+            web._unsubscribe_worker, scan, scan['subscribed'], 'with_delete', False)
+
+        self.assertEqual([i['wid'] for i in outcome['deleted']], ['1111111111'])
+        self.assertFalse(os.path.exists(folder))
+
+    def test_unconfirmed_item_is_never_deleted(self):
+        """Steam 还没确认生效就不删本地：此时它可能仍是订阅状态，删了会被重新下载"""
+        self.write_cache(['1111111111'])
+        folder = self.make_folder('1111111111')
+        SteamApiStub(self, subscribed=['1111111111'], confirm=False)
+        scan = self.scan_all()
+
+        outcome, _job = self.run_worker(
+            web._unsubscribe_worker, scan, scan['subscribed'], 'with_delete', False)
+
+        self.assertEqual(outcome['unconfirmed'], ['1111111111'])
+        self.assertEqual(outcome['deleted'], [])
+        self.assertTrue(os.path.isdir(folder))
+        self.assertNotIn('1111111111', self.state.session_unsubscribed)
+
+    def test_folder_already_gone_counts_as_done(self):
+        """Steam 自己把目录删掉了：这是目的达成，不是失败"""
+        self.write_cache(['1111111111'])
+        folder = self.make_folder('1111111111')
+        SteamApiStub(self, subscribed=['1111111111'])
+        scan = self.scan_all()
+        shutil.rmtree(folder)  # 扫描之后、我们动手之前，Steam 把它删了
+
+        outcome, _job = self.run_worker(
+            web._unsubscribe_worker, scan, scan['subscribed'], 'with_delete', False)
+
+        self.assertEqual(outcome['already_gone'], 1)
+        self.assertEqual(outcome['deleted'], [])
+        self.assertEqual(outcome['delete_failed'], [])
+
+    def test_item_no_longer_subscribed_is_skipped(self):
+        """扫描之后用户在 Steam 里自己取消订阅了：跳过，不当失败"""
+        self.write_cache(['1111111111'])
+        self.make_folder('1111111111')
+        stub = SteamApiStub(self, subscribed=[])
+        scan = self.scan_all()
+
+        outcome, job = self.run_worker(
+            web._unsubscribe_worker, scan, scan['subscribed'], 'only', False)
+
+        self.assertEqual(stub.unsubscribed_calls(), [])
+        self.assertEqual(outcome['skipped'], ['1111111111'])
+        self.assertEqual(outcome['failed'], [])
+        self.assertTrue(any('跳过' in line['text'] for line in job['lines']))
+
+    def test_one_failure_does_not_stop_the_rest(self):
+        self.write_cache(['1111111111', '2222222222'])
+        self.make_folder('1111111111')
+        self.make_folder('2222222222')
+        stub = SteamApiStub(self, subscribed=['1111111111', '2222222222'])
+        stub.mocks['unsubscribe'].side_effect = [False, True]
+        scan = self.scan_all()
+
+        outcome, _job = self.run_worker(
+            web._unsubscribe_worker, scan, scan['subscribed'], 'only', False)
+
+        self.assertEqual(len(outcome['failed']), 1)
+        self.assertEqual(outcome['unsubscribed'], ['2222222222'])
+
+    def test_steam_failure_raises_a_readable_error(self):
+        self.write_cache(['1111111111'])
+        self.make_folder('1111111111')
+        stub = SteamApiStub(self, connect_ok=False,
+                            connect_reason='steam_not_running',
+                            connect_detail='Steam 客户端没有在运行')
+        scan = self.scan_all()
+
+        with self.assertRaises(core.ScanError) as ctx:
+            self.run_worker(web._unsubscribe_worker, scan, scan['subscribed'], 'only', False)
+
+        self.assertIn('Steam 客户端没有在运行', str(ctx.exception))
+        stub.mocks['shutdown'].assert_called()  # 失败也要断开连接
+
+
+class TestResubscribeWorker(SteamWorkerTestCase):
+    def setUp(self):
+        super().setUp()
+        self.state = self.make_state()
+
+    def test_subscribes_the_leftover_folder(self):
+        self.write_cache([])
+        folder = self.make_folder('3115163440')
+        stub = SteamApiStub(self, subscribed=[])
+        scan = self.scan_all()
+
+        outcome, _job = self.run_worker(web._resubscribe_worker, scan, scan['orphans'])
+
+        self.assertEqual(outcome['resubscribed'], ['3115163440'])
+        self.assertEqual(stub.subscribed_calls(), ['3115163440'])
+        self.assertIn('3115163440', self.state.session_resubscribed)
+        self.assertTrue(os.path.isdir(folder))  # 只是重新订阅，不动文件
+
+    def test_already_subscribed_item_is_skipped(self):
+        self.write_cache([])
+        self.make_folder('3115163440')
+        stub = SteamApiStub(self, subscribed=['3115163440'])
+        scan = self.scan_all()
+
+        outcome, _job = self.run_worker(web._resubscribe_worker, scan, scan['orphans'])
+
+        self.assertEqual(stub.subscribed_calls(), [])
+        self.assertEqual(outcome['skipped'], ['3115163440'])
+        self.assertEqual(outcome['resubscribed'], [])
+
+
+class TestResubscribeBlocksDelete(DeleteGuardTestCase):
+    def test_just_resubscribed_folder_is_skipped(self):
+        """刚重新订阅的目录不能删：本地订阅记录还没刷新，只有面板自己知道它已经回来了"""
+        self.write_cache([])
+        folder = self.make_folder('3115163440',
+                                  minutes_old=core.FRESH_DOWNLOAD_GRACE_SECONDS // 60 + 5)
+        scan, items = self.scan_items(['3115163440'])
+        self.assertEqual(len(items), 1)
+
+        outcome, job = self.run_delete(scan, items, just_resubscribed=['3115163440'])
+
+        self.assertEqual(outcome['deleted'], [])
+        self.assertEqual(outcome['skipped_resubscribed'], ['3115163440'])
+        self.assertTrue(os.path.isdir(folder))
+        self.assertTrue(any('刚重新订阅' in line['text'] for line in job['lines']))
+
+
+class TestUnsubscribeEndpoint(PanelEndpointTestCase):
+    """取消订阅接口：令牌、扫描新鲜度、白名单、模式枚举都要挡住"""
+
+    def setUp(self):
+        super().setUp()
+        self.write_cache(['1111111111'])
+        self.make_folder('1111111111')
+        self.scan = self.scan_now()
+
+    def unsubscribe(self, payload, token=None):
+        return self.post('/api/unsubscribe', payload,
+                         token=self.token() if token is None else token)
+
+    def payload(self, **overrides):
+        data = {
+            'wids': ['1111111111'],
+            'scan_id': self.scan['scanned_at'],
+            'mode': 'only',
+            'recycle': True,
+        }
+        data.update(overrides)
+        return data
+
+    def test_requires_the_panel_token(self):
+        status, _headers, body = self.unsubscribe(self.payload(), token='')
+        self.assertEqual(status, 403)
+        self.assertIn('令牌', body.decode('utf-8'))
+
+    def test_requires_a_scan(self):
+        with self.state.lock:
+            self.state.last_scan = None
+        status, _headers, body = self.unsubscribe(self.payload())
+        self.assertEqual(status, 409)
+        self.assertIn('先扫描', body.decode('utf-8'))
+
+    def test_rejects_a_stale_scan_id(self):
+        status, _headers, body = self.unsubscribe(self.payload(scan_id='2000-01-01 00:00:00'))
+        self.assertEqual(status, 409)
+        self.assertIn('已过期', body.decode('utf-8'))
+
+    def test_rejects_an_unknown_mode(self):
+        status, _headers, body = self.unsubscribe(self.payload(mode='burn-it'))
+        self.assertEqual(status, 400)
+        self.assertIn('方式', body.decode('utf-8'))
+
+    def test_rejects_wids_outside_the_subscribed_list(self):
+        status, _headers, body = self.unsubscribe(self.payload(wids=['9999999999']))
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(body.decode('utf-8'))['rejected'], ['9999999999'])
+
+    def test_starts_a_job_for_a_valid_request(self):
+        with mock.patch.object(web, '_unsubscribe_worker', return_value={'mode': 'only'}) as worker:
+            status, _headers, body = self.unsubscribe(self.payload())
+
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body.decode('utf-8'))['job_id'])
+        self.assertEqual(worker.call_args.args[4], 'only')
+
+
+class TestResubscribeEndpoint(PanelEndpointTestCase):
+    def setUp(self):
+        super().setUp()
+        self.write_cache([])
+        self.make_folder('3115163440')
+        self.scan = self.scan_now()
+
+    def resubscribe(self, payload, token=None):
+        return self.post('/api/resubscribe', payload,
+                         token=self.token() if token is None else token)
+
+    def test_rejects_a_wid_that_is_not_a_leftover(self):
+        status, _headers, body = self.resubscribe(
+            {'wids': ['9999999999'], 'scan_id': self.scan['scanned_at']})
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(body.decode('utf-8'))['rejected'], ['9999999999'])
+
+    def test_starts_a_job_for_a_valid_request(self):
+        with mock.patch.object(web, '_resubscribe_worker', return_value={}) as worker:
+            status, _headers, body = self.resubscribe(
+                {'wids': ['3115163440'], 'scan_id': self.scan['scanned_at']})
+
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body.decode('utf-8'))['job_id'])
+        self.assertEqual(worker.call_args.args[3][0]['wid'], '3115163440')
+
+
+class TestSteamEndpoints(PanelEndpointTestCase):
+    """Steam 状态与跳转接口：探测不占任务槽，跳转要挡非法 ID"""
+
+    def test_probe_starts_a_background_check(self):
+        with mock.patch.object(web.steamapi, 'probe',
+                               return_value={'status': 'ok', 'reason': 'ok', 'detail': '',
+                                             'hint': '', 'subscribed_count': 3,
+                                             'dll_path': 'x.dll', 'checked_at': '10:00:00'}):
+            status, _headers, body = self.post('/api/steam/probe', {}, token=self.token())
+
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body.decode('utf-8'))['ok'])
+
+    def test_probe_failure_does_not_touch_the_job_slot(self):
+        """探测跑在后台线程里：不能占住唯一那个任务槽，否则扫描会被挡住"""
+        with mock.patch.object(web.steamapi, 'probe', return_value={'status': 'unavailable'}):
+            self.post('/api/steam/probe', {}, token=self.token())
+        self.assertIsNone(self.state.active_job)
+
+    def test_launch_opens_the_steam_protocol(self):
+        with mock.patch.object(core, 'open_url') as opener:
+            status, _headers, _body = self.post('/api/steam/launch', {}, token=self.token())
+
+        self.assertEqual(status, 200)
+        opener.assert_called_once_with('steam://open/main')
+
+    def test_manual_page_opens_the_workshop_item(self):
+        self.make_folder('3333333333')
+        self.scan_now()
+
+        with mock.patch.object(core, 'open_url') as opener:
+            status, _headers, _body = self.post('/api/steam/page', {'wid': '3333333333'},
+                                                token=self.token())
+
+        self.assertEqual(status, 200)
+        opener.assert_called_once_with('steam://url/CommunityFilePage/3333333333')
+
+    def test_manual_page_rejects_unknown_or_illegal_ids(self):
+        self.make_folder('3333333333')
+        self.scan_now()
+
+        for wid in ('9999999999', '../../etc/passwd', '..', 12345):
+            with mock.patch.object(core, 'open_url') as opener:
+                status, _headers, _body = self.post('/api/steam/page', {'wid': wid},
+                                                    token=self.token())
+            self.assertEqual(status, 404, f'wid={wid!r} 应当被拒绝')
+            opener.assert_not_called()
+
+    def test_state_exposes_the_steam_status(self):
+        with mock.patch.object(web, 'start_steam_probe', return_value=False):
+            with self.state.lock:
+                self.state.steam = {'status': 'unavailable', 'reason': 'no_dll', 'hint': '缺 dll'}
+                self.state.session_unsubscribed = {'1'}
+                self.state.session_resubscribed = {'2'}
+
+        status, _headers, body = self.get('/api/state')
+        data = json.loads(body.decode('utf-8'))
+
+        self.assertEqual(status, 200)
+        self.assertEqual(data['steam']['status'], 'unavailable')
+        self.assertEqual(data['session_unsubscribed'], ['1'])
+        self.assertEqual(data['session_resubscribed'], ['2'])
 
 
 if __name__ == '__main__':
