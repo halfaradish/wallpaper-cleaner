@@ -986,7 +986,11 @@ class PanelHandler(BaseHTTPRequestHandler):
     # ---------- 缩略图 ----------
 
     def _serve_thumb(self, query):
-        """发壁纸目录里的预览图字节，解码与缩放交给浏览器"""
+        """发壁纸目录里的预览图字节，解码与缩放交给浏览器
+
+        目录里的预览图已被 Steam 连着内容一起清掉时，回退到 Wallpaper Engine 自己缓存的
+        浏览缩略图（<WE>\\ui\\thumbnails\\ws_<ID>_thumb.jpg），仍然是本地文件、不联网。
+        """
         wid = (query.get('wid') or [''])[0]
         if not core.is_safe_wid(wid):
             return self._send_json({'error': '非法的 workshop ID'}, 404)
@@ -997,6 +1001,10 @@ class PanelHandler(BaseHTTPRequestHandler):
             return self._send_json({'error': '该壁纸不在最近一次扫描结果里'}, 404)
 
         path = core.resolve_preview_path(item.get('path') or '', item.get('preview') or '')
+        if not path:
+            with self.server.state.lock:
+                scan = self.server.state.last_scan or {}
+            path = core.we_thumbnail_path(scan.get('json_path') or '', wid)
         if not path:
             return self._send_json({'error': '这个文件夹里没有可用的预览图'}, 404)
         try:

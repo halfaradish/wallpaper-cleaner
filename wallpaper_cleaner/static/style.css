@@ -382,6 +382,11 @@ td.col-size { font-family: var(--mono); font-size: 12px; color: var(--text-dim);
 /* 图标平时压到 0.75，免得比它标注的标题还抢眼；悬停时与文字一起满血 */
 .title-icon { width: 13px; height: 13px; flex: none; opacity: 0.75; }
 
+/* 没有标题的行：标题格里放的是占位文字「打开目录」，压成 muted，免得看起来像是
+   作者真给它起了这个名字。要写在下面 .title-link:hover 之前——两者选择器权重相同，
+   靠后的一条生效，压暗的规则在前，悬停才会照常变亮。 */
+.title-link.muted { color: var(--muted); }
+
 .title-link:hover { color: var(--text); }
 .title-link:hover .title-text { text-decoration-style: solid; text-decoration-color: currentColor; }
 .title-link:hover .title-icon { opacity: 1; }
@@ -456,6 +461,9 @@ img.thumb { cursor: zoom-in; }
 .badge.orphan { color: var(--warn); border-color: rgba(217, 164, 65, 0.4); background: rgba(217, 164, 65, 0.1); }
 .badge.unknown { color: #c78ede; border-color: rgba(199, 142, 222, 0.4); background: rgba(199, 142, 222, 0.1); }
 .badge.resubscribed { color: var(--good); border-color: rgba(79, 180, 119, 0.4); background: rgba(79, 180, 119, 0.1); }
+/* 内容已被 Steam 清理（目录里没有 project.json）。中性灰：它说的是内容在不在，
+   与旁边那枚说订阅状态的彩色徽章分工不同，不抢视线 */
+.badge.missing { color: var(--text-dim); border-color: var(--border); background: var(--surface-3); }
 
 /* 等待 Steam 同步的行：状态已经不是磁盘上看起来的那样了，压暗一点提示"还没落定" */
 tbody tr.pending { opacity: 0.72; }

@@ -284,24 +284,35 @@ function renderStats() {
 /* ---------------- 缩略图 ---------------- */
 
 // 预览图是作者随内容一起发布的、就躺在壁纸目录里（project.json 的 preview 字段），
-// 服务端只把字节发过来，解码、缩放、GIF 播放全交给浏览器
+// 服务端只把字节发过来，解码、缩放、GIF 播放全交给浏览器。
+// 目录里的图被 Steam 连着内容一起清掉时，服务端会退回 Wallpaper Engine 缓存的浏览
+// 缩略图，这时 thumb_source 是 'we'——图还在，只是原图没了，标题里说明一下。
 function thumbCell(item) {
-  if (!item.preview) {
+  if (!item.thumb_source) {
     const label = item.wp_type ? esc(item.wp_type) : '—';
+    const tip = item.content_missing
+      ? '内容已被 Steam 清理，这个文件夹里也没有可用的预览图'
+      : '这个文件夹里没有预览图';
     return `<td class="col-thumb"><span class="thumb thumb-empty"
-      title="这个文件夹里没有预览图">${label}</span></td>`;
+      title="${esc(tip)}">${label}</span></td>`;
   }
   const src = `/api/thumb?wid=${encodeURIComponent(item.wid)}`;
+  const tip = item.thumb_source === 'we'
+    ? '来自 Wallpaper Engine 的缩略图缓存（原预览图已不在），点击放大'
+    : '点击放大';
   return `<td class="col-thumb"><img class="thumb" src="${src}" alt=""
-    loading="lazy" decoding="async" title="点击放大"></td>`;
+    loading="lazy" decoding="async" title="${esc(tip)}"></td>`;
 }
 
 /* ---------------- 标题（可点开目录） ---------------- */
 
 // 标题文字可点：用系统文件管理器打开这张壁纸的目录。热区只有标题文字本身，
 // 不做整行/整格可点——那样会和行内勾选框、行 hover 选中态打架。
-// 没有标题的行（待清理表显示 —、已订阅表显示 未知）原样输出纯文本，不给点。
+// 取不到标题的行（目录里没有 project.json）也给一个可点的占位文字：内容被 Steam
+// 清理过的残留本来就只剩一串 ID，能不能打开目录不该由标题决定。
 const NO_TITLE = ['—', '未知'];
+const NO_TITLE_TEXT = '打开目录';
+const NO_TITLE_HINT = '这个文件夹里没有 project.json（内容可能已被 Steam 清理），点这里打开目录';
 
 // 标题前的文件夹图标。用内联 SVG 而不是 emoji 或字体私有码位：彩色 emoji 会跟这套
 // 单色面板打架，私有码位（Segoe MDL2 之类）换个环境就可能变豆腐块。
@@ -312,9 +323,26 @@ const FOLDER_ICON = `<svg class="title-icon" viewBox="0 0 24 24" fill="none" str
   d="M3.5 18.5V5.5h5.5l2 2.5h9.5v10.5z"/></svg>`;
 
 function titleLink(item, text) {
-  if (!text || NO_TITLE.includes(text)) return esc(text || '—');
-  return `<span class="title-link" data-wid="${esc(item.wid)}" title="${esc(text)}"
-    >${FOLDER_ICON}<span class="title-text">${esc(text)}</span></span>`;
+  const title = (text || '').trim();
+  // 要么是真的标题，要么是没有标题：后端给已订阅行的兜底是「未知」，历史上还用过「—」
+  const named = Boolean(title) && !NO_TITLE.includes(title);
+  return `<span class="title-link${named ? '' : ' muted'}" data-wid="${esc(item.wid)}"
+    title="${esc(named ? title : NO_TITLE_HINT)}"
+    >${FOLDER_ICON}<span class="title-text">${esc(named ? title : NO_TITLE_TEXT)}</span></span>`;
+}
+
+// 内容被 Steam 清理掉（目录里没有 project.json）时的行内提示。
+// 放在标题格里：窄屏隐藏的是「类型」列，标题列一直都在。
+function missingBadge(item) {
+  return item.content_missing
+    ? ' <span class="badge missing" title="目录里没有 project.json：可能已被 Steam 清理，也可能还没下载完">内容已缺失</span>'
+    : '';
+}
+
+// 确认框里逐条列出的名字：这两张表都可能取不到标题，标一下免得只剩一串 ID
+function confirmLabel(item) {
+  const name = item.title ? ` · ${esc(item.title)}` : '';
+  return `${esc(item.wid)}${name}${item.content_missing ? '（内容已缺失）' : ''}`;
 }
 
 async function openFolder(wid) {
@@ -415,7 +443,7 @@ function renderOrphans() {
       <td class="col-check"><input type="checkbox" data-wid="${esc(item.wid)}"${checked ? ' checked' : ''}${revived ? ' disabled' : ''}></td>
       ${thumbCell(item)}
       <td class="wid">${esc(item.wid)}</td>
-      <td class="title-cell" title="${esc(title)}">${titleLink(item, title || '—')}${type}</td>
+      <td class="title-cell" title="${esc(title)}">${titleLink(item, title)}${type}${missingBadge(item)}</td>
       <td class="col-kind">${kindCell}</td>
       <td class="col-size">${fmtSize(item.size_bytes)}</td>
     </tr>`;
@@ -539,7 +567,7 @@ function renderSubscribed() {
       <td class="col-check"><input type="checkbox" data-wid="${esc(item.wid)}"${checked ? ' checked' : ''}></td>
       ${thumbCell(item)}
       <td class="wid">${esc(item.wid)}${mark}</td>
-      <td class="title-cell" title="${esc(item.title)}">${titleLink(item, item.title)}</td>
+      <td class="title-cell" title="${esc(item.title)}">${titleLink(item, item.title)}${missingBadge(item)}</td>
       <td class="col-size">${esc(item.declared_size)}</td>
       <td class="col-size">${fmtSize(item.size_bytes)}</td>
     </tr>`;
@@ -804,9 +832,8 @@ function openConfirm() {
   const shown = chosen.slice(0, 40);
   const rows = shown.map((i) => {
     // 删除前的最后一眼，带上标题才认得出是什么
-    const name = i.title ? ` · ${esc(i.title)}` : '';
     const note = i.kind === 'unknown' ? '（无法确定的文件夹）' : '';
-    return `<li><span>${esc(i.wid)}${name}${note}</span><span>${fmtSize(i.size_bytes)}</span></li>`;
+    return `<li><span>${confirmLabel(i)}${note}</span><span>${fmtSize(i.size_bytes)}</span></li>`;
   });
   if (chosen.length > shown.length) {
     rows.push(`<li class="more">…… 另有 ${chosen.length - shown.length} 个文件夹</li>`);
@@ -900,10 +927,7 @@ function openUnsubConfirm() {
   $('unsub-size').textContent = fmtSize(bytes);
 
   const shown = chosen.slice(0, 40);
-  const rows = shown.map((i) => {
-    const name = i.title ? ` · ${esc(i.title)}` : '';
-    return `<li><span>${esc(i.wid)}${name}</span><span>${fmtSize(i.size_bytes)}</span></li>`;
-  });
+  const rows = shown.map((i) => `<li><span>${confirmLabel(i)}</span><span>${fmtSize(i.size_bytes)}</span></li>`);
   if (chosen.length > shown.length) {
     rows.push(`<li class="more">…… 另有 ${chosen.length - shown.length} 张壁纸</li>`);
   }
@@ -1009,10 +1033,7 @@ function openResubConfirm() {
 
   $('resub-count').textContent = String(targets.length);
   const shown = targets.slice(0, 40);
-  const rows = shown.map((i) => {
-    const name = i.title ? ` · ${esc(i.title)}` : '';
-    return `<li><span>${esc(i.wid)}${name}</span><span>${fmtSize(i.size_bytes)}</span></li>`;
-  });
+  const rows = shown.map((i) => `<li><span>${confirmLabel(i)}</span><span>${fmtSize(i.size_bytes)}</span></li>`);
   if (targets.length > shown.length) {
     rows.push(`<li class="more">…… 另有 ${targets.length - shown.length} 张壁纸</li>`);
   }
