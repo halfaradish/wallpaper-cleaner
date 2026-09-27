@@ -764,16 +764,31 @@ PREVIEW_MAX_BYTES = 8 * 1024 * 1024
 PREVIEW_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.gif')
 PREVIEW_FALLBACK_NAMES = ('preview.jpg', 'preview.png', 'preview.jpeg', 'preview.gif')
 
+# Wallpaper Engine 自己还缓存了一份浏览用的缩略图：<WE>\ui\thumbnails\ws_<ID>_thumb.jpg。
+# 目录里的预览图被 Steam 连着内容一起删掉后，这份常常还在，就拿它兜底——同样是读本地
+# 文件，仍然不联网问 Steam 要图。它是给列表用的小图，放大看会糊，所以只在没有原图时用。
+WE_THUMB_DIR_PARTS = ('ui', 'thumbnails')
+WE_THUMB_NAME_TEMPLATE = 'ws_{wid}_thumb.jpg'
+
 
 def read_project_meta(folder):
-    """从壁纸目录的 project.json 读标题、类型与作者声明的预览图，返回 {'title', 'type', 'preview'}
+    """从壁纸目录的 project.json 读标题、类型、作者声明的预览图，以及它还在不在
 
-    project.json 是作者随内容一起发布的，就躺在目录里，与订阅状态无关——
-    已取消订阅的残留也能读到名字。读不到（缺失、坏文件、过大）时返回空字符串。
-    preview 是文件名字段，这里只原样读出来，是否可用交给 find_preview 判断。
+    返回 {'title', 'type', 'preview', 'present'}：
+
+    - project.json 是作者随内容一起发布的清单文件，就躺在目录里，与订阅状态无关——
+      已取消订阅的残留也能读到名字。present 表示这个文件在不在：Steam 把内容清理掉
+      之后，目录里往往只剩 Wallpaper Engine 自己写的缓存，清单随之消失，这就是
+      「内容已缺失」最可靠的标志。
+    - 文件在但读不懂（坏 JSON、超大、不是对象）仍算 present，只是字段全空：
+      那是这个文件有问题，不该说成内容被清掉了。
+    - preview 是文件名字段，这里只原样读出来，是否可用交给 find_preview 判断。
     """
-    empty = {'title': '', 'type': '', 'preview': ''}
     path = os.path.join(folder, 'project.json')
+    empty = {
+        'title': '', 'type': '', 'preview': '',
+        'present': os.path.isfile(path),
+    }
     try:
         if os.path.getsize(path) > PROJECT_JSON_MAX_BYTES:
             return empty
@@ -787,6 +802,7 @@ def read_project_meta(folder):
         'title': str(data.get('title') or '').strip(),
         'type': str(data.get('type') or '').strip(),
         'preview': str(data.get('preview') or '').strip(),
+        'present': True,
     }
 
 
@@ -836,6 +852,51 @@ def find_preview(folder, declared=''):
         if resolve_preview_path(folder, name):
             return name
     return ''
+
+
+def we_thumbnail_dir(json_path):
+    """由 WE 缓存文件的路径推导它的缩略图缓存目录，目录不存在时返回空字符串
+
+    json_path 形如 <WE>\\bin\\workshopcache.json，缩略图在 <WE>\\ui\\thumbnails。
+    路径不标准（例如用户把缓存文件复制到了别处）时推出来的目录不存在，那就当作没有兜底图，
+    不报错也不去找别的地方。
+    """
+    if not json_path:
+        return ''
+    we_root = os.path.dirname(os.path.dirname(os.path.normpath(json_path)))
+    path = os.path.join(we_root, *WE_THUMB_DIR_PARTS)
+    return path if os.path.isdir(path) else ''
+
+
+def we_thumbnail_path(json_path, wid):
+    """找 WE 缩略图缓存里这个 ID 的图，返回绝对路径；没有或不合格返回空字符串
+
+    文件名由 ID 精确拼出，不扫描目录、也不接受调用方给的路径。读之前再复核一次：
+    是文件、不太大、真实路径确实落在缩略图目录里（挡住被换成指向别处的软链接）。
+    """
+    if not is_safe_wid(wid):
+        return ''
+    directory = we_thumbnail_dir(json_path)
+    if not directory:
+        return ''
+    path = os.path.join(directory, WE_THUMB_NAME_TEMPLATE.format(wid=wid))
+    try:
+        if not os.path.isfile(path):
+            return ''
+        if os.path.getsize(path) > PREVIEW_MAX_BYTES:
+            return ''
+        if os.path.dirname(os.path.realpath(path)) != os.path.realpath(directory):
+            return ''
+    except OSError:
+        return ''
+    return path
+
+
+def thumb_source(preview_name, json_path, wid):
+    """这条扫描结果的缩略图从哪来：'folder'（目录里的预览图）、'we'（WE 缓存）、''（没有）"""
+    if preview_name:
+        return 'folder'
+    return 'we' if we_thumbnail_path(json_path, wid) else ''
 
 
 # 目录里的内容在这么久之内被改动过就不参与删除，兜住"正在下载、两边都还没有记录"的窗口。
@@ -1064,6 +1125,10 @@ def scan(workshop_dir, subscriptions, json_path='', config_file='', on_progress=
 
     extra_subscribed 是额外的「已订阅」来源（可采信的 Steam 订阅记录），用于兜住刚下载、
     WE 缓存还没收录的壁纸；extra_sizes 是它对应的占用字节数，仅用于补齐显示。
+
+    每个条目还带三个显示用字段：preview（目录里预览图的文件名，没有就是空）、
+    thumb_source（'folder' / 'we' / ''，见 thumb_source()）、content_missing
+    （目录里没有作者发布的 project.json，内容多半已被 Steam 清理）。
     """
     if not os.path.isdir(workshop_dir):
         raise ScanError(f'workshop目录不存在: {workshop_dir}')
@@ -1076,11 +1141,12 @@ def scan(workshop_dir, subscriptions, json_path='', config_file='', on_progress=
         path = os.path.join(workshop_dir, name)
         if not os.path.isdir(path):
             continue
+        # 每个目录都读一次 project.json：标题、类型、作者声明的预览图都来自它，
+        # 缓存里还没有这个目录（刚下载）时更是只能靠它
+        meta = read_project_meta(path)
+        preview = find_preview(path, meta['preview'])
         if name in subscriptions or name in extra:
             info = subscriptions.get(name) or {}
-            # 每个目录都读一次 project.json：缓存里还没有它（刚下载）时标题要靠它，
-            # 预览图也只有它写着是哪个文件
-            meta = read_project_meta(path)
             title = info.get('title') or meta['title'] or ''
             declared = info.get('size') or ''
             if not declared and name in sizes:
@@ -1093,22 +1159,26 @@ def scan(workshop_dir, subscriptions, json_path='', config_file='', on_progress=
                 'title': title or '未知',
                 'declared_size': declared or '未知',
                 'wp_type': meta['type'],
-                'preview': find_preview(path, meta['preview']),
+                'preview': preview,
+                'thumb_source': thumb_source(preview, json_path, name),
+                'content_missing': not meta['present'],
             })
         elif name.isdigit():
             # 残留目录里也有作者发布的 project.json，用它把标题补上，别只显示一串数字
-            meta = read_project_meta(path)
             orphans.append({
                 'wid': name, 'path': path, 'size_bytes': 0, 'kind': 'orphan',
                 'title': meta['title'], 'declared_size': '', 'wp_type': meta['type'],
-                'preview': find_preview(path, meta['preview']),
+                'preview': preview,
+                'thumb_source': thumb_source(preview, json_path, name),
+                'content_missing': not meta['present'],
             })
         else:
-            meta = read_project_meta(path)
             unknown.append({
                 'wid': name, 'path': path, 'size_bytes': 0, 'kind': 'unknown',
                 'title': meta['title'], 'declared_size': '', 'wp_type': meta['type'],
-                'preview': find_preview(path, meta['preview']),
+                'preview': preview,
+                'thumb_source': thumb_source(preview, json_path, name),
+                'content_missing': not meta['present'],
             })
 
     # 目录大小计算是纯磁盘 I/O，用线程池并行（os.scandir 不持有 GIL）
