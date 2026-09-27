@@ -838,6 +838,22 @@ class TestScanWithSteamRecord(SandboxTestCase):
 
 
 class TestFreshDownloadGuard(SandboxTestCase):
+    """新鲜度看的是目录里内容的修改时间，不是目录自身的 mtime
+
+    Steam 删除内容时同样会刷新目录的 mtime，只看目录的话，「刚被清空的残留」会被
+    误判成「正在下载」，白等一轮保护期。
+    """
+
+    def backdate(self, path, seconds):
+        """把目录连同里面的内容一起回拨到过去"""
+        stamp = time.time() - seconds
+        for dirpath, dirnames, filenames in os.walk(path):
+            for name in filenames:
+                os.utime(os.path.join(dirpath, name), (stamp, stamp))
+            for name in dirnames:
+                os.utime(os.path.join(dirpath, name), (stamp, stamp))
+        os.utime(path, (stamp, stamp))
+
     def test_recent_folder_is_protected(self):
         workshop_dir, _json_path, _subs = self.make_workshop(orphans=['3333333333'])
         path = os.path.join(workshop_dir, '3333333333')
@@ -847,9 +863,28 @@ class TestFreshDownloadGuard(SandboxTestCase):
     def test_old_folder_is_not_protected(self):
         workshop_dir, _json_path, _subs = self.make_workshop(orphans=['3333333333'])
         path = os.path.join(workshop_dir, '3333333333')
-        old = time.time() - core.FRESH_DOWNLOAD_GRACE_SECONDS - 60
-        os.utime(path, (old, old))
+        self.backdate(path, core.FRESH_DOWNLOAD_GRACE_SECONDS + 60)
         self.assertFalse(core.is_freshly_downloaded(path))
+
+    def test_folder_emptied_by_steam_is_not_protected(self):
+        """Steam 刚清空过的残留：目录 mtime 是新的，剩下的内容却是旧的"""
+        workshop_dir, _json_path, _subs = self.make_workshop(orphans=['3333333333'])
+        path = os.path.join(workshop_dir, '3333333333')
+        # 内容被删光，只剩 WE 写的着色器缓存（真实场景里就是 shaders/blobsSM40/*.dxs）
+        os.remove(os.path.join(path, 'data.bin'))
+        cache_dir = os.path.join(path, 'shaders')
+        os.makedirs(cache_dir)
+        self.write(os.path.join(cache_dir, 'blob.dxs'), 'cache')
+        self.backdate(path, core.FRESH_DOWNLOAD_GRACE_SECONDS + 60)
+        os.utime(path, None)  # Steam 的删除动作只刷新目录自身
+
+        self.assertFalse(core.is_freshly_downloaded(path))
+
+    def test_empty_folder_falls_back_to_its_own_time(self):
+        """空目录没有内容可看（Steam 刚建好、还没开始写），仍按目录自身的时间保护"""
+        path = os.path.join(self.tmp, 'empty-shell')
+        os.makedirs(path)
+        self.assertTrue(core.is_freshly_downloaded(path))
 
     def test_zero_grace_disables_guard(self):
         workshop_dir, _json_path, _subs = self.make_workshop(orphans=['3333333333'])

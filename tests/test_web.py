@@ -91,13 +91,19 @@ class DeleteGuardTestCase(unittest.TestCase):
             os.utime(path, (stamp, stamp))
 
     def make_folder(self, wid, minutes_old=0):
-        """造一个壁纸目录；minutes_old 用来模拟"早就下载好、已经过了保护期"的目录"""
+        """造一个壁纸目录；minutes_old 用来模拟"早就下载好、已经过了保护期"的目录
+
+        目录自身和里面的文件一起回拨：新鲜度看的是内容的时间（Steam 删除内容时也会
+        刷新目录自身的 mtime，只看目录会把刚被清空的残留误判成正在下载）。
+        """
         path = os.path.join(self.workshop_dir, wid)
         os.makedirs(path)
-        with open(os.path.join(path, 'data.bin'), 'wb') as f:
+        data = os.path.join(path, 'data.bin')
+        with open(data, 'wb') as f:
             f.write(b'x' * 128)
         if minutes_old:
             stamp = time.time() - minutes_old * 60
+            os.utime(data, (stamp, stamp))
             os.utime(path, (stamp, stamp))
         return path
 
@@ -194,6 +200,33 @@ class TestDeleteGuards(DeleteGuardTestCase):
         self.assertEqual(outcome['deleted'], [])
         self.assertEqual(outcome['skipped'], ['3115163440'])
         self.assertTrue(os.path.isdir(folder))
+
+    def test_shell_left_by_steam_is_deletable(self):
+        """Steam 刚清空过的残留：目录 mtime 很新，里面的内容却还是下载那一刻的
+
+        真实场景：取消订阅后启动 Steam，它把内容删掉、只留下 WE 写的着色器缓存，
+        同时刷新了目录自身的 mtime。这样的空壳不该被当作"正在下载"再等 30 分钟。
+        """
+        self.write_cache([])
+        path = os.path.join(self.workshop_dir, '3115163440')
+        cache = os.path.join(path, 'shaders')
+        os.makedirs(cache)
+        blob = os.path.join(cache, 'blob.dxs')
+        with open(blob, 'wb') as f:
+            f.write(b'cache')
+        old = time.time() - core.FRESH_DOWNLOAD_GRACE_SECONDS - 60
+        for target in (blob, cache):
+            os.utime(target, (old, old))
+        os.utime(path, None)  # Steam 的删除动作只刷新目录自身
+
+        scan, items = self.scan_items(['3115163440'])
+        self.assertEqual(len(items), 1)
+
+        outcome, _job = self.run_delete(scan, items)
+
+        self.assertEqual(len(outcome['deleted']), 1)
+        self.assertEqual(outcome['skipped'], [])
+        self.assertFalse(os.path.exists(path))
 
     def test_completed_download_is_not_held_by_grace(self):
         """刚下载完就被取消订阅：Steam 记录已写明内容装完，不该再按"可能正在下载"等 30 分钟"""
