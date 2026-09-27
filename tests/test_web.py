@@ -380,6 +380,26 @@ class PanelEndpointTestCase(DeleteGuardTestCase):
                 json.dump({'title': f'壁纸 {wid}', 'type': 'scene', 'preview': declared}, f)
         return folder
 
+    def make_we_cache(self, wid=None):
+        """按真实布局造 WE 的目录：<tmp>\\wallpaper_engine\\{bin\\workshopcache.json, ui\\thumbnails}
+
+        返回 (缓存文件路径, 缩略图路径)；wid 为 None 时不放缩略图。
+        调用方把它当成本次的 json_path，扫描结果里记的就会是这个位置。
+        """
+        we_root = os.path.join(self.tmp, 'wallpaper_engine')
+        thumbs = os.path.join(we_root, 'ui', 'thumbnails')
+        os.makedirs(thumbs)
+        json_path = os.path.join(we_root, 'bin', 'workshopcache.json')
+        os.makedirs(os.path.dirname(json_path))
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump({'wallpapers': []}, f)
+        thumb = ''
+        if wid:
+            thumb = os.path.join(thumbs, f'ws_{wid}_thumb.jpg')
+            with open(thumb, 'wb') as f:
+                f.write(b'\xff\xd8\xff' + b'x' * 64)  # 只要求 JPEG 的魔数与后缀
+        return json_path, thumb
+
     def scan_now(self):
         """按"扫描那一刻"的状态跑一次真扫描，并把它放进面板状态（接口只认这份结果）"""
         context = core.load_subscription_context(self.json_path, self.workshop_dir)
@@ -454,6 +474,52 @@ class TestThumbEndpoint(PanelEndpointTestCase):
     def test_item_without_preview_is_not_served(self):
         self.make_folder('3333333333')  # 只有 data.bin，没有预览图
         self.scan_now()
+
+        status, _headers, _body = self.get('/api/thumb?wid=3333333333')
+
+        self.assertEqual(status, 404)
+
+    def test_falls_back_to_the_we_thumbnail_cache(self):
+        """目录里的预览图被 Steam 连着内容删掉后，发 WE 缓存里那张浏览缩略图"""
+        self.make_folder('3333333333')  # 只剩缓存文件的空壳，没有预览图
+        self.json_path, _thumb = self.make_we_cache('3333333333')
+        self.scan_now()
+
+        status, headers, body = self.get('/api/thumb?wid=3333333333')
+
+        self.assertEqual(status, 200)
+        self.assertEqual(headers['Content-Type'], 'image/jpeg')
+        self.assertTrue(body.startswith(b'\xff\xd8\xff'))
+
+    def test_folders_own_preview_wins_over_the_cache(self):
+        """目录里有作者发的原图就用原图，不去动缓存里那张小图"""
+        self.make_preview_folder('3333333333')
+        self.json_path, _thumb = self.make_we_cache('3333333333')
+        self.scan_now()
+
+        status, headers, body = self.get('/api/thumb?wid=3333333333')
+
+        self.assertEqual(status, 200)
+        self.assertEqual(headers['Content-Type'], 'image/png')
+        self.assertEqual(body, self.PNG_BYTES)
+
+    def test_other_ids_thumbnail_in_the_cache_is_not_borrowed(self):
+        """缓存目录里有的只是别人的图：这个 ID 没有就还是 404"""
+        self.make_folder('3333333333')
+        self.json_path, _thumb = self.make_we_cache('9999999999')
+        self.scan_now()
+
+        status, _headers, _body = self.get('/api/thumb?wid=3333333333')
+
+        self.assertEqual(status, 404)
+
+    def test_unstandard_json_path_is_not_an_error(self):
+        """缓存文件不在 WE 的标准目录里时推不出缩略图目录：404，而不是 500"""
+        self.make_folder('3333333333')
+        self.scan_now()
+        with self.state.lock:
+            self.state.last_scan['json_path'] = os.path.join(
+                self.tmp, 'xvault', 'workshopcache.json')
 
         status, _headers, _body = self.get('/api/thumb?wid=3333333333')
 
@@ -537,6 +603,20 @@ class TestRevealEndpoint(PanelEndpointTestCase):
 
         self.assertEqual(status, 200)
         opener.assert_called_once_with(folder)
+
+    def test_content_missing_shell_can_be_opened(self):
+        """取不到标题的空壳（内容已被 Steam 清理）同样要能打开目录
+
+        面板给这类行显示的是占位文字「打开目录」：能不能打开目录不该由标题决定。
+        """
+        path = os.path.join(self.workshop_dir, '3333333333')
+        os.makedirs(path)
+        self.scan_now()
+
+        status, _body, opener = self.reveal('3333333333')
+
+        self.assertEqual(status, 200)
+        opener.assert_called_once_with(path)
 
     def test_requires_the_panel_token(self):
         self.make_folder('3333333333')

@@ -351,10 +351,21 @@ class TestScan(SandboxTestCase):
         self.assertEqual(result['unknown'][0]['wp_type'], 'video')
 
     def test_orphan_without_project_json_has_empty_title(self):
+        """内容被 Steam 清理过的残留：标题取不到，但也要标出内容已缺失"""
         workshop_dir, json_path, subscriptions = self.make_workshop(orphans=['3333333333'])
         result = core.scan(workshop_dir, subscriptions)
         self.assertEqual(result['orphans'][0]['title'], '')
         self.assertEqual(result['orphans'][0]['wp_type'], '')
+        self.assertTrue(result['orphans'][0]['content_missing'])
+
+    def test_orphan_with_project_json_is_not_marked_missing(self):
+        workshop_dir, json_path, subscriptions = self.make_workshop(orphans=['3333333333'])
+        self.write(
+            os.path.join(workshop_dir, '3333333333', 'project.json'),
+            json.dumps({'title': '某张壁纸', 'type': 'scene'}),
+        )
+        result = core.scan(workshop_dir, subscriptions)
+        self.assertFalse(result['orphans'][0]['content_missing'])
 
     def test_missing_reported(self):
         workshop_dir, json_path, subscriptions = self.make_workshop(
@@ -598,7 +609,7 @@ class TestProjectMeta(SandboxTestCase):
         folder = self.make_folder(json.dumps({'title': '神里绫华-X-Ray-ほうき星', 'type': 'scene'}))
         self.assertEqual(
             core.read_project_meta(folder),
-            {'title': '神里绫华-X-Ray-ほうき星', 'type': 'scene', 'preview': ''},
+            {'title': '神里绫华-X-Ray-ほうき星', 'type': 'scene', 'preview': '', 'present': True},
         )
 
     def test_reads_declared_preview(self):
@@ -607,21 +618,23 @@ class TestProjectMeta(SandboxTestCase):
         self.assertEqual(core.read_project_meta(folder)['preview'], 'preview.gif')
 
     def test_missing_file_returns_empty(self):
+        """清单文件不在：内容多半已被 Steam 清理，present 为 False"""
         self.assertEqual(
             core.read_project_meta(self.make_folder()),
-            {'title': '', 'type': '', 'preview': ''},
+            {'title': '', 'type': '', 'preview': '', 'present': False},
         )
 
     def test_broken_json_returns_empty(self):
+        """文件在但读不懂：字段空着，但不算「内容已缺失」——那是文件自己的问题"""
         self.assertEqual(
             core.read_project_meta(self.make_folder('{ not json')),
-            {'title': '', 'type': '', 'preview': ''},
+            {'title': '', 'type': '', 'preview': '', 'present': True},
         )
 
     def test_non_dict_json_returns_empty(self):
         self.assertEqual(
             core.read_project_meta(self.make_folder('[1, 2]')),
-            {'title': '', 'type': '', 'preview': ''},
+            {'title': '', 'type': '', 'preview': '', 'present': True},
         )
 
     def test_oversized_file_is_skipped(self):
@@ -630,7 +643,8 @@ class TestProjectMeta(SandboxTestCase):
         with open(path, 'w', encoding='utf-8') as f:
             f.write('x' * (core.PROJECT_JSON_MAX_BYTES + 1))
         self.assertEqual(
-            core.read_project_meta(folder), {'title': '', 'type': '', 'preview': ''}
+            core.read_project_meta(folder),
+            {'title': '', 'type': '', 'preview': '', 'present': True},
         )
 
 
@@ -694,6 +708,68 @@ class TestPreview(SandboxTestCase):
         except (OSError, NotImplementedError, AttributeError):
             self.skipTest('当前环境不允许创建符号链接')
         self.assertEqual(core.resolve_preview_path(folder, 'preview.jpg'), '')
+
+
+class TestWeThumbnail(SandboxTestCase):
+    """目录里的预览图被 Steam 连着内容一起删掉后，回退到 WE 缓存的浏览缩略图"""
+
+    def make_we(self, wid='3764725758', size=1024):
+        """按 WE 的真实布局搭沙箱：<tmp>\\wallpaper_engine\\bin\\workshopcache.json"""
+        we_root = os.path.join(self.tmp, 'wallpaper_engine')
+        thumbs = os.path.join(we_root, 'ui', 'thumbnails')
+        os.makedirs(thumbs)
+        json_path = os.path.join(we_root, 'bin', 'workshopcache.json')
+        os.makedirs(os.path.dirname(json_path))
+        self.write(json_path, '{}')
+        thumb = os.path.join(thumbs, f'ws_{wid}_thumb.jpg')
+        with open(thumb, 'wb') as f:
+            f.write(b'x' * size)
+        return json_path, thumb
+
+    def test_finds_cached_thumbnail(self):
+        json_path, thumb = self.make_we()
+        self.assertEqual(core.we_thumbnail_path(json_path, '3764725758'), thumb)
+
+    def test_missing_thumbnail_is_empty(self):
+        json_path, _thumb = self.make_we(wid='1111111111')
+        self.assertEqual(core.we_thumbnail_path(json_path, '3764725758'), '')
+
+    def test_unstandard_layout_is_empty(self):
+        """缓存文件被放到了别处时推不出缩略图目录：当作没有兜底图，不报错"""
+        elsewhere = os.path.join(self.tmp, 'somewhere', 'workshopcache.json')
+        os.makedirs(os.path.dirname(elsewhere))
+        self.write(elsewhere, '{}')
+        self.assertEqual(core.we_thumbnail_path(elsewhere, '3764725758'), '')
+        self.assertEqual(core.we_thumbnail_path('', '3764725758'), '')
+        self.assertEqual(core.we_thumbnail_dir(''), '')
+
+    def test_unsafe_wid_is_rejected(self):
+        json_path, _thumb = self.make_we()
+        for wid in ('..', 'a/b', '', 'a\\b', '3764725758/../other'):
+            self.assertEqual(core.we_thumbnail_path(json_path, wid), '')
+
+    def test_oversized_thumbnail_is_ignored(self):
+        json_path, _thumb = self.make_we(size=core.PREVIEW_MAX_BYTES + 1)
+        self.assertEqual(core.we_thumbnail_path(json_path, '3764725758'), '')
+
+    def test_file_outside_the_dir_is_rejected(self):
+        """缩略图被换成指向别处的软链接时不给读"""
+        json_path, thumb = self.make_we()
+        outside = os.path.join(self.tmp, 'outside.jpg')
+        self.write(outside, 'secret')
+        os.remove(thumb)
+        try:
+            os.symlink(outside, thumb)
+        except (OSError, NotImplementedError, AttributeError):
+            self.skipTest('当前环境不允许创建符号链接')
+        self.assertEqual(core.we_thumbnail_path(json_path, '3764725758'), '')
+
+    def test_thumb_source_prefers_the_folder(self):
+        """目录里有作者发的原图就用原图，没有才回退到 WE 缓存"""
+        json_path, _thumb = self.make_we()
+        self.assertEqual(core.thumb_source('preview.jpg', json_path, '3764725758'), 'folder')
+        self.assertEqual(core.thumb_source('', json_path, '3764725758'), 'we')
+        self.assertEqual(core.thumb_source('', json_path, '9999999999'), '')
 
 
 class TestOpenFolder(unittest.TestCase):
@@ -786,6 +862,8 @@ class TestScanDisplayFallback(SandboxTestCase):
                   result['subscribed'] + result['orphans'] + result['unknown']}
         for wid in ('1111111111', '2222222222', 'my-wallpaper'):
             self.assertEqual(by_wid[wid]['preview'], 'preview.gif')
+            self.assertEqual(by_wid[wid]['thumb_source'], 'folder')
+            self.assertFalse(by_wid[wid]['content_missing'])
         # 缓存里有标题也照样读 project.json：类型和预览图都只有它写着
         self.assertEqual(by_wid['1111111111']['title'], '壁纸 1111111111')
         self.assertEqual(by_wid['1111111111']['wp_type'], 'scene')
@@ -794,6 +872,25 @@ class TestScanDisplayFallback(SandboxTestCase):
         workshop_dir, json_path, subscriptions = self.make_workshop(orphans=['2222222222'])
         result = core.scan(workshop_dir, subscriptions, json_path=json_path)
         self.assertEqual(result['orphans'][0]['preview'], '')
+        self.assertEqual(result['orphans'][0]['thumb_source'], '')
+        self.assertTrue(result['orphans'][0]['content_missing'])
+
+    def test_scan_falls_back_to_we_thumbnail(self):
+        """只剩缓存文件的空壳：预览图没有了，缩略图指向 WE 缓存里那张"""
+        workshop_dir, _json_path, subscriptions = self.make_workshop(orphans=['2222222222'])
+        we_root = os.path.join(self.tmp, 'wallpaper_engine')
+        thumbs = os.path.join(we_root, 'ui', 'thumbnails')
+        os.makedirs(thumbs)
+        json_path = os.path.join(we_root, 'bin', 'workshopcache.json')
+        os.makedirs(os.path.dirname(json_path))
+        self.write(json_path, '{}')
+        self.write(os.path.join(thumbs, 'ws_2222222222_thumb.jpg'), 'jpeg-bytes')
+
+        result = core.scan(workshop_dir, subscriptions, json_path=json_path)
+
+        entry = result['orphans'][0]
+        self.assertEqual(entry['thumb_source'], 'we')
+        self.assertTrue(entry['content_missing'])
 
 
 class TestScanWithSteamRecord(SandboxTestCase):
