@@ -253,14 +253,18 @@ DEFAULT_CONFIG_TEMPLATE = r'''# Wallpaper Cleaner 配置文件（支持以 # 开
 #
 # json_path: Wallpaper Engine 的 workshop 订阅缓存文件路径
 # workshop_dir: workshop 壁纸内容存放目录
+# steam_dll_path: 取消订阅/重新订阅用的 steam_api64.dll（可填文件或所在目录），
+#                 留空则自动查找（优先用 Wallpaper Engine 自带的那份）
 # 路径支持绝对路径和相对路径（相对路径基于本脚本所在目录）
 #
 # 示例（去掉行首的 # 即可生效）：
 # json_path: D:\Steam\steamapps\common\wallpaper_engine\bin\workshopcache.json
 # workshop_dir: D:\Steam\steamapps\workshop\content\431960
+# steam_dll_path: D:\Steam\steamapps\common\wallpaper_engine\bin\steam_api64.dll
 
 json_path: ""
 workshop_dir: ""
+steam_dll_path: ""
 '''
 
 
@@ -354,6 +358,8 @@ def load_config():
     config = read_config_file(config_file)
     json_path = resolve_path(config.get('json_path', ''))
     workshop_dir = resolve_path(config.get('workshop_dir', ''))
+    # 取消订阅/重新订阅用的 dll 是可选配置：留空表示自动查找
+    steam_dll_path = resolve_path(config.get('steam_dll_path', ''))
 
     if not json_path:
         raise ConfigError(f'配置项 "json_path" 未设置或为空，请编辑配置文件: {config_file}')
@@ -367,6 +373,7 @@ def load_config():
         'raw': config,
         'json_path': json_path,
         'workshop_dir': workshop_dir,
+        'steam_dll_path': steam_dll_path,
     }
 
 
@@ -382,6 +389,7 @@ def describe_config(auto_detect=None):
         'exists': False,
         'json_path': '',
         'workshop_dir': '',
+        'steam_dll_path': '',
         'auto_json_path': '',
         'auto_workshop_dir': '',
         'error': None,
@@ -405,6 +413,7 @@ def describe_config(auto_detect=None):
             config = read_config_file(config_file)
             result['json_path'] = resolve_path(config.get('json_path', ''))
             result['workshop_dir'] = resolve_path(config.get('workshop_dir', ''))
+            result['steam_dll_path'] = resolve_path(config.get('steam_dll_path', ''))
         except ConfigError as e:
             result['error'] = str(e)
 
@@ -923,6 +932,18 @@ def open_folder(path):
     if sys.platform != 'win32':
         raise OSError('当前系统不支持打开文件夹')
     os.startfile(path)
+
+
+def open_url(url):
+    """把链接交给系统打开，失败抛 OSError
+
+    steam:// 这类协议由 Steam 客户端自己注册并处理：面板里的「启动 Steam」与
+    「在 Steam 中手动取消订阅」都靠它跳转。和 open_folder 一样，只发起打开，
+    不读、不改任何东西。
+    """
+    if sys.platform != 'win32':
+        raise OSError('当前系统不支持打开链接')
+    os.startfile(url)
 
 
 def send_to_recycle_bin(path):
