@@ -54,23 +54,21 @@
 
   <section class="card">
     <div class="card-head">
-      <h2>待清理 <span class="count" id="orphan-count">0</span></h2>
+      <h2>待清理
+        <!-- 规则说明原先常驻在卡片头下面，一整段太长，收进弹窗按点列 -->
+        <button class="icon-btn help-btn" id="btn-orphan-help" type="button"
+          aria-label="待清理说明" title="待清理说明"><svg viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"
+          aria-hidden="true"><circle cx="12" cy="12" r="9.1"/><path
+          d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg></button>
+        <span class="count" id="orphan-count">0</span>
+      </h2>
       <div class="card-tools">
         <label class="chk"><input type="checkbox" id="check-all"> 全选已取消订阅</label>
         <button class="btn" id="btn-resubscribe" disabled>重新订阅选中</button>
         <button class="btn danger" id="btn-delete" disabled>清理选中</button>
       </div>
     </div>
-    <p class="hint">
-      只清理已取消订阅的壁纸残留，正在使用的壁纸不会被触碰。
-      标记为 <span class="badge unknown">无法确定的文件夹</span> 的来源不明，默认不勾选，需要时请手动勾选。
-      <span class="badge missing">内容已缺失</span> 表示目录里已经没有作者发布的 <code>project.json</code>
-      （内容可能已被 Steam 清理，只剩缓存文件），这时标题显示为「打开目录」，点它同样可以在资源管理器里
-      打开该目录；没有标题的行也一样可点，标题列本身就是打开目录的入口。
-      两个尺寸列分别是：「标注大小」是 Steam / WE 记录里写的内容大小（没有记录时显示「未知」），
-      「磁盘占用」是按簇对齐后的实际占用，也就是删掉后真正腾出来的量。
-      想把某张壁纸重新订阅回来，勾选它再点「重新订阅选中」，Steam 会自动下载回本地。
-    </p>
     <div class="tablewrap" id="orphan-wrap">
       <table>
         <thead>
@@ -252,6 +250,27 @@
       <button class="btn ghost hidden" id="btn-steam-manual">在 Steam 中手动操作</button>
       <button class="btn ghost" id="btn-steam-launch">启动 Steam</button>
       <button class="btn" id="btn-steam-retry">重新检测</button>
+    </div>
+  </div>
+</div>
+
+<!-- 「待清理」的规则说明：文字与原先卡片头下面那段常驻提示一致，只是按点拆开 -->
+<div class="overlay hidden" id="orphan-help-overlay">
+  <div class="dialog">
+    <h3>关于「待清理」</h3>
+    <ul class="help-list">
+      <li>只清理<strong>已取消订阅</strong>的壁纸残留，正在使用的壁纸不会被触碰。</li>
+      <li>标记为 <span class="badge unknown">无法确定的文件夹</span> 的来源不明，默认不勾选，需要时请手动勾选。</li>
+      <li><span class="badge missing">内容已缺失</span> 表示目录里已经没有作者发布的 <code>project.json</code>
+        （内容可能已被 Steam 清理，只剩缓存文件），这类行的标题会显示为「打开目录」。</li>
+      <li>标题列本身就是打开目录的入口，没有标题的行也一样可点，
+        点它可以在资源管理器里打开该目录。</li>
+      <li>两个尺寸列分别是：「标注大小」是 Steam / WE 记录里写的内容大小（没有记录时显示「未知」），
+        「磁盘占用」是按簇对齐后的实际占用，也就是删掉后真正腾出来的量。</li>
+      <li>想把某张壁纸重新订阅回来，勾选它再点「重新订阅选中」，Steam 会自动下载回本地。</li>
+    </ul>
+    <div class="dialog-actions">
+      <button class="btn ghost" id="btn-close-orphan-help">知道了</button>
     </div>
   </div>
 </div>

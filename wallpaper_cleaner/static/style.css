@@ -145,6 +145,17 @@ code {
 
 .icon-btn:hover { background: var(--surface-3); color: var(--text); }
 
+.icon-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* 「待清理」标题旁的说明按钮。图标尺寸不能借 .title-icon：那个是给标题链接用的
+   13px + 0.75 透明度，放在按钮里会偏小偏灰 */
+.help-btn svg { width: 15px; height: 15px; display: block; }
+
+/* 这个按钮夹在「待清理」和数字之间，两侧紧挨着字。按钮自带的 padding: 6px 8px 会把图标
+   往外推 8px，只靠 h2 的 gap 决定间距会显得松，用负 margin 抵掉一半。
+   垂直方向别动：.card-head 的高度正是这个按钮撑起来的 */
+.help-btn { margin: 0 -3px; }
+
 /* ---------- 布局 ---------- */
 
 main {
@@ -766,6 +777,16 @@ tbody tr.pending { opacity: 0.72; }
 
 .guide-steps li { margin: 4px 0; }
 
+/* 说明弹窗里的分点列表（与引导步骤同样的排版，但语义是无序的若干条规则） */
+.help-list {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.help-list li { margin: 5px 0; }
+
 #steam-reason-box { margin-top: 12px; }
 #steam-detail { margin-top: 8px; }
 
@@ -866,7 +887,7 @@ tbody tr.pending { opacity: 0.72; }
   /* 尺寸列只留「磁盘占用」：窄屏放不下两列，而它才是"删掉能腾多少 / 有多大" */
   .col-declared { display: none; }
   td.col-declared { display: none; }
-  /* 窄屏下这一行放不下两句，让搜索框占满；待清理卡片里那句说明一直都在 */
+  /* 窄屏下这一行放不下两句，让搜索框占满 */
   .sub-hint { display: none; }
 }
 

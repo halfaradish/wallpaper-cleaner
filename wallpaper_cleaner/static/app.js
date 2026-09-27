@@ -841,6 +841,17 @@ async function startScan(options) {
   });
 }
 
+/* ---------------- 待清理说明 ---------------- */
+
+// 这段说明原先常驻在卡片头下面，一整段太长；现在挂在标题旁的「?」按钮上，点了才弹出来
+function openOrphanHelp() {
+  $('orphan-help-overlay').classList.remove('hidden');
+}
+
+function closeOrphanHelp() {
+  $('orphan-help-overlay').classList.add('hidden');
+}
+
 /* ---------------- 清理 ---------------- */
 
 function openConfirm() {
@@ -1190,6 +1201,10 @@ function bind() {
     btn.addEventListener('click', () => closeDrawer(btn.dataset.close));
   });
 
+  // 标题旁的「?」：打开规则说明（原先那段常驻提示）
+  $('btn-orphan-help').addEventListener('click', openOrphanHelp);
+  $('btn-close-orphan-help').addEventListener('click', closeOrphanHelp);
+
   $('btn-delete').addEventListener('click', openConfirm);
   $('btn-cancel-delete').addEventListener('click', closeConfirm);
   $('btn-confirm-delete').addEventListener('click', doDelete);
@@ -1358,6 +1373,7 @@ function bind() {
     closeUnsubConfirm();
     closeResubConfirm();
     closeSteamGuide();
+    closeOrphanHelp();
     closeDrawer('advanced-drawer');
   });
 
@@ -1367,6 +1383,7 @@ function bind() {
     ['unsub-overlay', closeUnsubConfirm],
     ['resub-overlay', closeResubConfirm],
     ['steam-overlay', closeSteamGuide],
+    ['orphan-help-overlay', closeOrphanHelp],
   ].forEach(([id, close]) => {
     $(id).addEventListener('click', (e) => {
       if (e.target === e.currentTarget) close();
