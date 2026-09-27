@@ -43,6 +43,20 @@ function fmtSize(bytes) {
   return `${n.toFixed(2)} ${units[i]}`;
 }
 
+// 「磁盘占用」：服务端量出来的实际占用（按簇对齐的估算）；拿不到簇大小时它是 0，
+// 这时退回精确的文件字节数，宁可给个偏小的准确值，也不显示 0
+function diskBytes(item) {
+  return Number(item.alloc_bytes) || Number(item.size_bytes) || 0;
+}
+
+// 「磁盘占用」单元格的悬停说明：带上精确的文件字节数，方便对照两处口径
+function diskHint(item) {
+  const exact = `其中文件字节合计 ${fmtSize(item.size_bytes)}`;
+  return item.alloc_bytes
+    ? `磁盘占用：按卷的簇大小对齐后的实际占用（每个子目录也算一个簇），接近资源管理器的「占用空间」。${exact}`
+    : `磁盘占用：拿不到卷的簇大小，退回文件字节数（${exact}）`;
+}
+
 function dirname(path) {
   if (!path) return '';
   const cut = Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/'));
@@ -271,7 +285,11 @@ function renderStats() {
   $('stat-subscribed').textContent = String(scan.subscribed.length);
   $('stat-folders').textContent = String(scan.total_folders);
   $('stat-orphans').textContent = String(cleanable);
-  $('stat-freed').textContent = fmtSize(scan.orphan_bytes);
+  // 「可释放空间」按磁盘占用算：删掉后真正腾出来的就是这些簇。
+  // 和待清理列表一样把两类目录都算上（以前漏了「无法确定的文件夹」）
+  const freed = (Number(scan.orphan_usage_bytes) || Number(scan.orphan_bytes) || 0)
+    + (Number(scan.unknown_usage_bytes) || Number(scan.unknown_bytes) || 0);
+  $('stat-freed').textContent = fmtSize(freed);
   $('stat-missing').textContent = scan.missing.length
     ? `${scan.missing.length} 张已订阅的壁纸还没下载到本地`
     : '';
@@ -377,8 +395,9 @@ function sortItems(items, mode) {
   if (mode !== 'desc' && mode !== 'asc') return items;
   const wantDesc = mode === 'desc';
   return items.slice().sort((a, b) => {
-    // diff 是「a 比 b 大多少」：大到小就得让更大的排前面，返回负数把它顶到前面去
-    const diff = (Number(a.size_bytes) || 0) - (Number(b.size_bytes) || 0);
+    // diff 是「a 比 b 大多少」：大到小就得让更大的排前面，返回负数把它顶到前面去。
+    // 排的是表里那列「磁盘占用」，与服务端默认顺序同一个口径
+    const diff = diskBytes(a) - diskBytes(b);
     if (diff) return wantDesc ? -diff : diff;
     // 体积相同用 ID 兜底，比较器才是全序：连点排序不会让两行互换位置
     return a.wid < b.wid ? -1 : (a.wid > b.wid ? 1 : 0);
@@ -445,7 +464,8 @@ function renderOrphans() {
       <td class="wid">${esc(item.wid)}</td>
       <td class="title-cell" title="${esc(title)}">${titleLink(item, title)}${type}${missingBadge(item)}</td>
       <td class="col-kind">${kindCell}</td>
-      <td class="col-size">${fmtSize(item.size_bytes)}</td>
+      <td class="col-size col-declared">${esc(item.declared_size)}</td>
+      <td class="col-size col-usage" title="${esc(diskHint(item))}">${fmtSize(diskBytes(item))}</td>
     </tr>`;
   }).join('');
 
@@ -489,7 +509,7 @@ function selectAllOrphans() {
 
 function updateDeleteButton() {
   const chosen = cleanupItems().filter((i) => state.selected.has(i.wid));
-  const bytes = chosen.reduce((sum, i) => sum + (Number(i.size_bytes) || 0), 0);
+  const bytes = chosen.reduce((sum, i) => sum + diskBytes(i), 0);
   const btn = $('btn-delete');
   btn.disabled = state.busy || chosen.length === 0;
   btn.textContent = chosen.length
@@ -568,8 +588,8 @@ function renderSubscribed() {
       ${thumbCell(item)}
       <td class="wid">${esc(item.wid)}${mark}</td>
       <td class="title-cell" title="${esc(item.title)}">${titleLink(item, item.title)}${missingBadge(item)}</td>
-      <td class="col-size">${esc(item.declared_size)}</td>
-      <td class="col-size">${fmtSize(item.size_bytes)}</td>
+      <td class="col-size col-declared">${esc(item.declared_size)}</td>
+      <td class="col-size col-usage" title="${esc(diskHint(item))}">${fmtSize(diskBytes(item))}</td>
     </tr>`;
   }).join('');
 
@@ -810,9 +830,11 @@ async function startScan(options) {
     const result = job.result;
     if (!result) return;
     const cleanable = result.orphans.length + result.unknown.length;
+    const freed = (Number(result.orphan_usage_bytes) || Number(result.orphan_bytes) || 0)
+      + (Number(result.unknown_usage_bytes) || Number(result.unknown_bytes) || 0);
     toast(
       cleanable
-        ? `扫描完成：待清理 ${cleanable} 个，可释放 ${fmtSize(result.orphan_bytes)}`
+        ? `扫描完成：待清理 ${cleanable} 个，可释放 ${fmtSize(freed)}`
         : '扫描完成：没有需要清理的内容',
       cleanable ? '' : 'ok',
     );
@@ -825,7 +847,7 @@ function openConfirm() {
   const chosen = cleanupItems().filter((i) => state.selected.has(i.wid));
   if (!chosen.length) return;
 
-  const bytes = chosen.reduce((sum, i) => sum + (Number(i.size_bytes) || 0), 0);
+  const bytes = chosen.reduce((sum, i) => sum + diskBytes(i), 0);
   $('confirm-count').textContent = String(chosen.length);
   $('confirm-size').textContent = fmtSize(bytes);
 
@@ -833,7 +855,7 @@ function openConfirm() {
   const rows = shown.map((i) => {
     // 删除前的最后一眼，带上标题才认得出是什么
     const note = i.kind === 'unknown' ? '（无法确定的文件夹）' : '';
-    return `<li><span>${confirmLabel(i)}${note}</span><span>${fmtSize(i.size_bytes)}</span></li>`;
+    return `<li><span>${confirmLabel(i)}${note}</span><span>${fmtSize(diskBytes(i))}</span></li>`;
   });
   if (chosen.length > shown.length) {
     rows.push(`<li class="more">…… 另有 ${chosen.length - shown.length} 个文件夹</li>`);
@@ -922,12 +944,12 @@ function openUnsubConfirm() {
   const chosen = subscribedItems().filter((i) => state.subSelected.has(i.wid));
   if (!chosen.length) return;
 
-  const bytes = chosen.reduce((sum, i) => sum + (Number(i.size_bytes) || 0), 0);
+  const bytes = chosen.reduce((sum, i) => sum + diskBytes(i), 0);
   $('unsub-count').textContent = String(chosen.length);
   $('unsub-size').textContent = fmtSize(bytes);
 
   const shown = chosen.slice(0, 40);
-  const rows = shown.map((i) => `<li><span>${confirmLabel(i)}</span><span>${fmtSize(i.size_bytes)}</span></li>`);
+  const rows = shown.map((i) => `<li><span>${confirmLabel(i)}</span><span>${fmtSize(diskBytes(i))}</span></li>`);
   if (chosen.length > shown.length) {
     rows.push(`<li class="more">…… 另有 ${chosen.length - shown.length} 张壁纸</li>`);
   }
@@ -1032,10 +1054,25 @@ function openResubConfirm() {
   }
 
   $('resub-count').textContent = String(targets.length);
+  // 重新订阅会让 Steam 把内容重新下载一遍，所以这里摆出"要下多少"：数字来自
+  // Steam/WE 记录的标注大小。被 Steam 删掉内容记录的残留查不到，只能标未知
+  const known = targets.filter((i) => Number(i.declared_bytes) > 0);
+  const download = known.reduce((sum, i) => sum + Number(i.declared_bytes), 0);
   const shown = targets.slice(0, 40);
-  const rows = shown.map((i) => `<li><span>${confirmLabel(i)}</span><span>${fmtSize(i.size_bytes)}</span></li>`);
+  const rows = shown.map((i) => {
+    const label = Number(i.declared_bytes) > 0
+      ? `重新下载约 ${fmtSize(i.declared_bytes)}`
+      : '下载大小未知';
+    return `<li><span>${confirmLabel(i)}</span><span
+      title="当前磁盘占用 ${esc(fmtSize(diskBytes(i)))}">${esc(label)}</span></li>`;
+  });
   if (targets.length > shown.length) {
     rows.push(`<li class="more">…… 另有 ${targets.length - shown.length} 张壁纸</li>`);
+  }
+  if (known.length) {
+    const unknown = targets.length - known.length;
+    rows.push(`<li class="more">重新下载合计约 ${fmtSize(download)}`
+      + `${unknown ? `（另有 ${unknown} 张没有记录，未计入）` : ''}</li>`);
   }
   $('resub-list').innerHTML = rows.join('');
   $('resub-overlay').classList.remove('hidden');

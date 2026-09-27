@@ -863,6 +863,9 @@ tbody tr.pending { opacity: 0.72; }
   th, td { padding: 8px 12px; }
   .col-kind { display: none; }
   td.col-kind { display: none; }
+  /* 尺寸列只留「磁盘占用」：窄屏放不下两列，而它才是"删掉能腾多少 / 有多大" */
+  .col-declared { display: none; }
+  td.col-declared { display: none; }
   /* 窄屏下这一行放不下两句，让搜索框占满；待清理卡片里那句说明一直都在 */
   .sub-hint { display: none; }
 }
