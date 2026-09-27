@@ -318,31 +318,42 @@ td.col-size { font-family: var(--mono); font-size: 12px; color: var(--text-dim);
 .title-cell { color: var(--text-dim); max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wp-type { color: var(--muted); font-size: 11.5px; }
 
-/* 标题文字可点：用资源管理器打开这张壁纸的目录。只有文字本身是热区，
+/* 标题文字可点：用资源管理器打开这张壁纸的目录。热区是「图标 + 标题文字」这一整块，
    整行仍然是勾选与 hover 选中态的地盘。
-   截断必须落在行内盒子上：td 的 max-width 在表格布局里不生效（列宽由内容撑），
-   所以超长标题会一直把表格撑宽。完整标题在 title 属性里，悬停可见。
+   图标放在文字前面，用 inline-flex 并排：这样长得再长的标题被省略号截断时，
+   图标也稳稳留在最左边，不会跟着被裁掉。
    下划线是常驻的：只靠悬停才出现的提示，用户得先碰到才知道这里能点；
-   平时用很淡的点线（只表示「这里可点」），悬停再变实线加亮，反馈反而更明确。 */
+   平时用很淡的点线（只表示「这里可点」），悬停再变实线加亮，反馈反而更明确。
+   max-width 仍然是 380px 包住「图标 + 文字」，所以标题列的宽窄与加图标之前一致。 */
 .title-link {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   max-width: 380px;
+  vertical-align: bottom;
+  cursor: pointer;
+}
+
+/* 截断必须落在文字这一个盒子上：td 的 max-width 在表格布局里不生效（列宽由内容撑），
+   而 flex 子项默认 min-width:auto，不显式归零的话省略号根本不出现。
+   点线也只划在文字下面，不会划到图标底下。 */
+.title-text {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  vertical-align: bottom;
-  cursor: pointer;
   text-decoration: underline dotted;
   text-decoration-color: rgba(174, 183, 198, 0.4);
   text-decoration-thickness: 1px;
   text-underline-offset: 2px;
 }
 
-.title-link:hover {
-  color: var(--text);
-  text-decoration-style: solid;
-  text-decoration-color: currentColor;
-}
+/* 图标平时压到 0.75，免得比它标注的标题还抢眼；悬停时与文字一起满血 */
+.title-icon { width: 13px; height: 13px; flex: none; opacity: 0.75; }
+
+.title-link:hover { color: var(--text); }
+.title-link:hover .title-text { text-decoration-style: solid; text-decoration-color: currentColor; }
+.title-link:hover .title-icon { opacity: 1; }
 
 /* 「占用大小」列头可点：三态循环排序（默认 → 大到小 → 小到大）。
    只有这一列是按钮，别的列头保持静态文字——整片表头都可点会让人以为点哪儿都能排序。

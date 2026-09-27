@@ -189,10 +189,18 @@ function thumbCell(item) {
 // 没有标题的行（待清理表显示 —、已订阅表显示 未知）原样输出纯文本，不给点。
 const NO_TITLE = ['—', '未知'];
 
+// 标题前的文件夹图标。用内联 SVG 而不是 emoji 或字体私有码位：彩色 emoji 会跟这套
+// 单色面板打架，私有码位（Segoe MDL2 之类）换个环境就可能变豆腐块。
+// stroke 用 currentColor，所以它跟着文字一起变亮；24 的 viewBox 缩到 13px 后
+// 描边约 1px，与表格分隔线、点状下划线同一个量级，不显笨重。
+const FOLDER_ICON = `<svg class="title-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+  stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path
+  d="M3.5 18.5V5.5h5.5l2 2.5h9.5v10.5z"/></svg>`;
+
 function titleLink(item, text) {
   if (!text || NO_TITLE.includes(text)) return esc(text || '—');
-  return `<span class="title-link" data-wid="${esc(item.wid)}"
-    title="${esc(text)}">${esc(text)}</span>`;
+  return `<span class="title-link" data-wid="${esc(item.wid)}" title="${esc(text)}"
+    >${FOLDER_ICON}<span class="title-text">${esc(text)}</span></span>`;
 }
 
 async function openFolder(wid) {
