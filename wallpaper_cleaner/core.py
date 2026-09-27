@@ -953,12 +953,61 @@ def is_freshly_downloaded(path, grace_seconds=None):
     return (time.time() - stamp) < grace
 
 
-def get_dir_size(path):
-    """递归计算目录总大小（字节），权限不足的子项跳过"""
+_cluster_size_cache = {}
+
+
+def volume_cluster_size(path):
+    """返回 path 所在卷的簇大小（字节），取不到返回 0
+
+    磁盘实际占用是"每个文件向上取整到簇"，所以要先知道簇有多大。只查一次、按卷缓存：
+    一次扫描里的目录都落在同一个卷上。非 Windows 与调用失败都返回 0，调用方据此降级。
+    """
+    if sys.platform != 'win32':
+        return 0
+    root = os.path.splitdrive(os.path.abspath(path))[0] + '\\'
+    if root in _cluster_size_cache:
+        return _cluster_size_cache[root]
+
+    size = 0
+    try:
+        import ctypes
+        sectors = ctypes.c_uint32()
+        bytes_per_sector = ctypes.c_uint32()
+        free_clusters = ctypes.c_uint32()
+        total_clusters = ctypes.c_uint32()
+        if ctypes.windll.kernel32.GetDiskFreeSpaceW(
+            ctypes.c_wchar_p(root), ctypes.byref(sectors), ctypes.byref(bytes_per_sector),
+            ctypes.byref(free_clusters), ctypes.byref(total_clusters),
+        ):
+            size = sectors.value * bytes_per_sector.value
+    except Exception as e:
+        logger.debug('读取卷簇大小失败 (%s): %s', root, e)
+        size = 0
+
+    _cluster_size_cache[root] = size
+    return size
+
+
+def get_dir_usage(path, cluster_size=0):
+    """一次遍历算出目录的两个口径，返回 (文件字节数, 磁盘占用字节数)
+
+    - 文件字节数：目录里所有文件的 st_size 之和，就是"这批内容有多大"的精确值，
+      内容完整时与 Steam/WE 标注的大小一致。
+    - 磁盘占用：文件系统按簇分配空间，每个文件至少吃一个簇，目录自身也要占，所以
+      小文件多的目录会明显大于文件字节数。这里按 cluster_size 向上取整，并给每个
+      子目录算一个簇——接近资源管理器里那个「占用空间」。它是估算：NTFS 压缩与稀疏
+      文件会高估，资源管理器还会算目录索引与 MFT，所以两边不会逐字节相等。
+      cluster_size <= 0（拿不到簇大小）时磁盘占用返回 0，由调用方退回文件字节数。
+
+    权限不足的子项跳过，与实际能读到的内容保持一致。
+    """
     total = 0
+    allocated = 0
     stack = [path]
     while stack:
         current = stack.pop()
+        if cluster_size > 0 and current != path:
+            allocated += cluster_size  # 子目录自身也要占一个簇
         try:
             with os.scandir(current) as entries:
                 for entry in entries:
@@ -966,12 +1015,29 @@ def get_dir_size(path):
                         if entry.is_dir(follow_symlinks=False):
                             stack.append(entry.path)
                         elif entry.is_file(follow_symlinks=False):
-                            total += entry.stat(follow_symlinks=False).st_size
+                            size = entry.stat(follow_symlinks=False).st_size
+                            total += size
+                            if cluster_size > 0:
+                                allocated += -(-size // cluster_size) * cluster_size
                     except OSError:
                         pass
         except OSError:
             pass
-    return total
+    return total, allocated
+
+
+def get_dir_size(path):
+    """递归计算目录的文件字节数合计，权限不足的子项跳过"""
+    return get_dir_usage(path)[0]
+
+
+def usage_bytes(item):
+    """对外报「占了多少 / 释放多少」用的数字：磁盘实际占用优先，测不出时退回文件字节数
+
+    删除释放的是磁盘上真实占用的空间，所以以磁盘占用为准；拿不到簇大小（非 Windows 或
+    查询失败）时退回文件字节数，至少不会把数字报成 0。
+    """
+    return item.get('alloc_bytes') or item.get('size_bytes') or 0
 
 
 def format_size(size_bytes):
@@ -1113,6 +1179,25 @@ def _emit(on_progress, done, total, message, level='info'):
         on_progress(done, total, message, level)
 
 
+def declared_size_info(wid, info, sizes):
+    """算一条壁纸的「标注大小」，返回 (字节数, 展示字符串)
+
+    标注是别人记下的内容字节数，不是我们量出来的，所以它可能缺失、也可能落后于最新版本：
+
+    - Steam 内容记录（appworkshop ACF 的 WorkshopItemsInstalled.size）优先：它是字节数，
+      我们自己格式化，两张表的精度与格式才一致；
+    - 其次是 WE 缓存里的标注字符串（filesizelabel），它只在 Steam 记录缺失时兜底；
+    - 都没有就返回 (0, '未知')——残留目录被 Steam 删掉内容记录后就是这种情况。
+
+    字节数 0 表示没有记录，供「重新订阅会下载多大」这类合计使用。
+    """
+    recorded = sizes.get(str(wid)) or 0
+    if recorded:
+        return recorded, format_size(recorded)
+    label = (info or {}).get('size') or ''
+    return 0, label or '未知'
+
+
 def scan(workshop_dir, subscriptions, json_path='', config_file='', on_progress=None, max_workers=8,
          extra_subscribed=None, extra_sizes=None):
     """扫描 workshop 目录并按订阅状态分类，不删除任何内容
@@ -1124,11 +1209,14 @@ def scan(workshop_dir, subscriptions, json_path='', config_file='', on_progress=
     - missing:    订阅列表中但磁盘上没有对应目录
 
     extra_subscribed 是额外的「已订阅」来源（可采信的 Steam 订阅记录），用于兜住刚下载、
-    WE 缓存还没收录的壁纸；extra_sizes 是它对应的占用字节数，仅用于补齐显示。
+    WE 缓存还没收录的壁纸；extra_sizes 是它对应的内容字节数（Steam 内容记录），既用于
+    补齐「标注大小」，也是删除时判定"内容已装完"的依据。
 
-    每个条目还带三个显示用字段：preview（目录里预览图的文件名，没有就是空）、
-    thumb_source（'folder' / 'we' / ''，见 thumb_source()）、content_missing
-    （目录里没有作者发布的 project.json，内容多半已被 Steam 清理）。
+    每个条目还带这些显示用字段：
+    - preview / thumb_source / content_missing：见 thumb_source() 与 read_project_meta()
+    - size_bytes：目录里文件的字节数合计（精确值）
+    - alloc_bytes：磁盘实际占用（按簇对齐的估算），0 表示拿不到簇大小、退回 size_bytes
+    - declared_bytes / declared_size：标注大小的字节数与展示字符串，见 declared_size_info()
     """
     if not os.path.isdir(workshop_dir):
         raise ScanError(f'workshop目录不存在: {workshop_dir}')
@@ -1148,16 +1236,16 @@ def scan(workshop_dir, subscriptions, json_path='', config_file='', on_progress=
         if name in subscriptions or name in extra:
             info = subscriptions.get(name) or {}
             title = info.get('title') or meta['title'] or ''
-            declared = info.get('size') or ''
-            if not declared and name in sizes:
-                declared = format_size(sizes[name])
+            declared_bytes, declared_size = declared_size_info(name, info, sizes)
             subscribed.append({
                 'wid': name,
                 'path': path,
                 'size_bytes': 0,
+                'alloc_bytes': 0,
                 'kind': 'subscribed',
                 'title': title or '未知',
-                'declared_size': declared or '未知',
+                'declared_size': declared_size,
+                'declared_bytes': declared_bytes,
                 'wp_type': meta['type'],
                 'preview': preview,
                 'thumb_source': thumb_source(preview, json_path, name),
@@ -1165,39 +1253,46 @@ def scan(workshop_dir, subscriptions, json_path='', config_file='', on_progress=
             })
         elif name.isdigit():
             # 残留目录里也有作者发布的 project.json，用它把标题补上，别只显示一串数字
+            declared_bytes, declared_size = declared_size_info(name, None, sizes)
             orphans.append({
-                'wid': name, 'path': path, 'size_bytes': 0, 'kind': 'orphan',
-                'title': meta['title'], 'declared_size': '', 'wp_type': meta['type'],
+                'wid': name, 'path': path, 'size_bytes': 0, 'alloc_bytes': 0, 'kind': 'orphan',
+                'title': meta['title'], 'declared_size': declared_size,
+                'declared_bytes': declared_bytes, 'wp_type': meta['type'],
                 'preview': preview,
                 'thumb_source': thumb_source(preview, json_path, name),
                 'content_missing': not meta['present'],
             })
         else:
+            declared_bytes, declared_size = declared_size_info(name, None, sizes)
             unknown.append({
-                'wid': name, 'path': path, 'size_bytes': 0, 'kind': 'unknown',
-                'title': meta['title'], 'declared_size': '', 'wp_type': meta['type'],
+                'wid': name, 'path': path, 'size_bytes': 0, 'alloc_bytes': 0, 'kind': 'unknown',
+                'title': meta['title'], 'declared_size': declared_size,
+                'declared_bytes': declared_bytes, 'wp_type': meta['type'],
                 'preview': preview,
                 'thumb_source': thumb_source(preview, json_path, name),
                 'content_missing': not meta['present'],
             })
 
-    # 目录大小计算是纯磁盘 I/O，用线程池并行（os.scandir 不持有 GIL）
+    # 目录大小计算是纯磁盘 I/O，用线程池并行（os.scandir 不持有 GIL）。
+    # 两个口径同一次遍历算出来，不额外多走一遍目录。
+    cluster = volume_cluster_size(workshop_dir)
     targets = subscribed + orphans + unknown
     total = len(targets)
     _emit(on_progress, 0, total, f'开始计算 {total} 个目录的大小…')
     if total:
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(get_dir_size, item['path']): item for item in targets}
+            futures = {pool.submit(get_dir_usage, item['path'], cluster): item for item in targets}
             for index, future in enumerate(as_completed(futures), 1):
                 item = futures[future]
                 try:
-                    item['size_bytes'] = future.result()
+                    item['size_bytes'], item['alloc_bytes'] = future.result()
                 except Exception:
-                    item['size_bytes'] = 0
+                    item['size_bytes'] = item['alloc_bytes'] = 0
                 _emit(on_progress, index, total, f'计算大小 {index}/{total}：{item["wid"]}', 'debug')
 
-    orphans.sort(key=lambda i: (-i['size_bytes'], i['wid']))
-    unknown.sort(key=lambda i: (-i['size_bytes'], i['wid']))
+    # 默认顺序与服务端排序都按磁盘占用（表里那个可点的列），拿不到簇大小时退回文件字节数
+    orphans.sort(key=lambda i: (-usage_bytes(i), i['wid']))
+    unknown.sort(key=lambda i: (-usage_bytes(i), i['wid']))
     subscribed.sort(key=lambda i: i['wid'])
 
     on_disk = {item['wid'] for item in targets}
@@ -1213,8 +1308,11 @@ def scan(workshop_dir, subscriptions, json_path='', config_file='', on_progress=
         'orphans': orphans,
         'unknown': unknown,
         'missing': missing,
+        # *_bytes 是文件字节数（精确值），*_usage_bytes 是磁盘占用（删掉后真正腾出来的量）
         'orphan_bytes': sum(i['size_bytes'] for i in orphans),
         'unknown_bytes': sum(i['size_bytes'] for i in unknown),
+        'orphan_usage_bytes': sum(usage_bytes(i) for i in orphans),
+        'unknown_usage_bytes': sum(usage_bytes(i) for i in unknown),
     }
 
 
@@ -1223,6 +1321,11 @@ def delete_folders(items, workshop_dir, to_recycle_bin=False, on_progress=None):
 
     items 应来自 scan() 的结果；workshop_dir 为其所属的 workshop 目录。
     每个 wid 都会重新做一次路径校验，单项失败不影响其余项。
+
+    报出来的大小走 usage_bytes()：磁盘实际占用优先（删除真正腾出来的就是这些簇），
+    拿不到簇大小时退回文件字节数。删除移入回收站时空间要等清空回收站才真正还给系统，
+    数字仍按占用报，别让"释放了多少"看起来像已经落袋。
+
     返回 {'deleted': [...], 'failed': [...], 'freed_bytes': int}
     """
     deleted, failed = [], []
@@ -1231,7 +1334,7 @@ def delete_folders(items, workshop_dir, to_recycle_bin=False, on_progress=None):
 
     for index, item in enumerate(items, 1):
         wid = item.get('wid', '')
-        size_bytes = item.get('size_bytes', 0)
+        size_bytes = usage_bytes(item)
         try:
             path = resolve_target_path(workshop_dir, wid)
             if not os.path.exists(path):

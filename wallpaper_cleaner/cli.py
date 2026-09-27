@@ -76,7 +76,7 @@ def _preview(targets, held_back):
         note = '' if item['kind'] == 'orphan' else '　[非数字目录]'
         title = f'  {item["title"]}' if item.get('title') else ''
         logger.info(
-            f'  待删除 {item["wid"]}  ({core.format_size(item["size_bytes"])}){title}{note}'
+            f'  待删除 {item["wid"]}  ({core.format_size(core.usage_bytes(item))}){title}{note}'
         )
     for label, reason in held_back:
         logger.info(f'  保留 {label}　[{reason}]')
@@ -86,7 +86,7 @@ def _preview(targets, held_back):
 
     logger.info('')
     logger.info(f'待删除数量: {len(targets)}')
-    logger.info(f'可释放空间: {core.format_size(sum(i["size_bytes"] for i in targets))}')
+    logger.info(f'可释放空间: {core.format_size(sum(core.usage_bytes(i) for i in targets))}')
     logger.info('去掉 --dry-run 参数即可实际执行删除。')
 
 
@@ -149,7 +149,7 @@ def main(dry_run=False):
         logger.debug(
             f'保留: {item["wid"]} | 标题: {item["title"]} | '
             f'标注大小: {item["declared_size"]} | '
-            f'实际大小: {core.format_size(item["size_bytes"])}'
+            f'磁盘占用: {core.format_size(core.usage_bytes(item))}'
         )
 
     # CLI 与旧版一致：未订阅的目录一律删除（面板里未知目录默认不勾选，更保守）
