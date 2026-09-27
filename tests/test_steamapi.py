@@ -13,6 +13,7 @@ import ctypes
 import os
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -422,6 +423,44 @@ class TestConnect(SteamApiSandbox):
 
         with self.assertRaises(RuntimeError):
             steamapi.get_subscribed()
+
+
+@unittest.skipUnless(sys.platform == 'win32', 'tasklist 与 CREATE_NO_WINDOW 都只在 Windows 上')
+class TestSteamRunning(unittest.TestCase):
+    """steam_running()：从 tasklist 的输出里找 steam.exe"""
+
+    def run_tasklist(self, stdout='', error=None):
+        """替掉 subprocess.run，返回 (steam_running 的结果, 那次调用的 mock)"""
+        run = mock.Mock(side_effect=error) if error else mock.Mock(
+            return_value=mock.Mock(stdout=stdout))
+        with mock.patch.object(steamapi.subprocess, 'run', run):
+            return steamapi.steam_running(), run
+
+    def test_detects_the_steam_process(self):
+        output = '"steam.exe","1234","Console","1","120,000 K"\n"explorer.exe","5678","Console","1","90,000 K"\n'
+
+        running, _run = self.run_tasklist(output)
+
+        self.assertTrue(running)
+
+    def test_reports_not_running_when_steam_is_absent(self):
+        running, _run = self.run_tasklist('"explorer.exe","5678","Console","1","90,000 K"\n')
+
+        self.assertFalse(running)
+
+    def test_tasklist_is_spawned_without_a_console_window(self):
+        """回归守卫：打包后的 exe 自己没有控制台，没这个标志时 Windows 会给 tasklist
+        新建一个终端窗口——每次 Steam 检测都在屏幕上闪一下、还把前台焦点抢走"""
+        _running, run = self.run_tasklist('"steam.exe","1234","Console","1","120,000 K"\n')
+
+        self.assertEqual(run.call_args.args[0], ['tasklist', '/FO', 'CSV', '/NH'])
+        self.assertEqual(run.call_args.kwargs['creationflags'], subprocess.CREATE_NO_WINDOW)
+
+    def test_query_failure_counts_as_running(self):
+        # 查不出来时说"没在运行"会误导用户去启动 Steam，所以按"可能在运行"处理
+        running, _run = self.run_tasklist(error=OSError('找不到 tasklist'))
+
+        self.assertTrue(running)
 
 
 class TestSubscriptionCalls(SteamApiSandbox):

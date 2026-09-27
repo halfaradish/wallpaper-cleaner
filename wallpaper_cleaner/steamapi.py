@@ -194,6 +194,11 @@ def steam_running():
     try:
         output = subprocess.run(
             ['tasklist', '/FO', 'CSV', '/NH'],
+            # 打包后的 exe（console=False）自己没有控制台，这时拉起 tasklist 这类控制台程序，
+            # Windows 会给它新建一个终端窗口：每次检测都在屏幕上闪一下，还会把前台焦点抢走。
+            # 加个创建标志就行，判定不受影响——输出走管道，本来就不需要那个控制台。
+            # 该常量只有 Windows 上有，安全的前提是上面的 supported() 已经拦住了其它平台。
+            creationflags=subprocess.CREATE_NO_WINDOW,
             capture_output=True, text=True, timeout=15,
         ).stdout or ''
     except Exception:
