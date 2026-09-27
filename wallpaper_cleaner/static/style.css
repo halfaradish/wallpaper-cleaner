@@ -790,6 +790,9 @@ tbody tr.pending { opacity: 0.72; }
 #steam-reason-box { margin-top: 12px; }
 #steam-detail { margin-top: 8px; }
 
+/* 发现新版本的弹窗：更新说明是 Release 里的 Markdown 原文，按纯文本显示，超出就滚动 */
+#update-notes { max-height: 260px; margin-top: 10px; }
+
 .warn-text { margin: 10px 0 0; font-size: 12.5px; color: #f0a9a2; }
 
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }

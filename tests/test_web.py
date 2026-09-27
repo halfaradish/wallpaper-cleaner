@@ -24,7 +24,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from wallpaper_cleaner import core, web
+from wallpaper_cleaner import core, update, web
 
 
 def rmtree(path):
@@ -1061,6 +1061,124 @@ class TestSteamEndpoints(PanelEndpointTestCase):
         self.assertEqual(entry['declared_bytes'], 1536)  # write_acf 里写的 size
         self.assertEqual(entry['declared_size'], core.format_size(1536))
         self.assertGreaterEqual(data['scan']['orphan_usage_bytes'], 128)
+
+
+class TestUpdateEndpoints(PanelEndpointTestCase):
+    """检查更新与打开链接：检查走后台线程不占任务槽，跳转地址只由服务端决定"""
+
+    def wait_until(self, predicate, timeout=5.0):
+        """后台线程写状态是异步的，等它落地；超时也不抛异常，交给后面的断言报错"""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.01)
+        return predicate()
+
+    def test_check_runs_in_the_background_and_lands_in_state(self):
+        result = dict(update.empty_state(), status='outdated', latest='0.9.0', current='0.4.0')
+
+        with mock.patch.object(web.update, 'check', return_value=result) as checker:
+            status, _headers, _body = self.post('/api/update/check', {}, token=self.token())
+
+            self.assertEqual(status, 200)
+            # 查更新跑在后台线程里：不能占住唯一那个任务槽，否则扫描会被挡住
+            self.assertIsNone(self.state.active_job)
+            self.assertTrue(self.wait_until(lambda: self.state.update_status()['status'] != 'checking'))
+
+        checker.assert_called_once()
+        self.assertEqual(self.state.update_status()['status'], 'outdated')
+        self.assertEqual(self.state.update_status()['latest'], '0.9.0')
+
+    def test_second_check_while_one_is_running_is_refused(self):
+        entered, release = threading.Event(), threading.Event()
+
+        def slow_check(_current):
+            entered.set()
+            release.wait(timeout=5)
+            return dict(update.empty_state(), status='latest', latest='0.4.0')
+
+        with mock.patch.object(web.update, 'check', side_effect=slow_check):
+            first, _headers, _body = self.post('/api/update/check', {}, token=self.token())
+            self.assertEqual(first, 200)
+            self.assertTrue(entered.wait(timeout=5), '后台线程应当已经进了检查')
+
+            second, _headers, body = self.post('/api/update/check', {}, token=self.token())
+            release.set()
+
+        self.assertEqual(second, 409)
+        self.assertIn('正在检查', json.loads(body.decode('utf-8'))['error'])
+
+    def test_state_exposes_the_update_status(self):
+        with self.state.lock:
+            self.state.update = dict(update.empty_state(), status='outdated', latest='0.9.0',
+                                     current='0.4.0', url=f'{update.REPO_URL}/releases/tag/v0.9.0')
+
+        status, _headers, body = self.get('/api/state')
+        data = json.loads(body.decode('utf-8'))
+
+        self.assertEqual(status, 200)
+        self.assertEqual(data['update']['status'], 'outdated')
+        self.assertEqual(data['update']['latest'], '0.9.0')
+
+    def test_open_repo_opens_the_repository_page(self):
+        with mock.patch.object(core, 'open_url') as opener:
+            status, _headers, body = self.post('/api/open', {'target': 'repo'}, token=self.token())
+
+        self.assertEqual(status, 200)
+        opener.assert_called_once_with(update.REPO_URL)
+        self.assertEqual(json.loads(body.decode('utf-8'))['url'], update.REPO_URL)
+
+    def test_open_release_prefers_the_page_from_the_last_check(self):
+        url = f'{update.REPO_URL}/releases/tag/v0.9.0'
+        with self.state.lock:
+            self.state.update = dict(update.empty_state(), status='outdated', url=url)
+
+        with mock.patch.object(core, 'open_url') as opener:
+            status, _headers, _body = self.post('/api/open', {'target': 'release'}, token=self.token())
+
+        self.assertEqual(status, 200)
+        opener.assert_called_once_with(url)
+
+    def test_open_release_falls_back_when_there_is_no_trusted_page(self):
+        """没查过更新，或者缓存里那个地址不是本仓库的，都要回落到最新 Release 页"""
+        for cached in ('', 'https://evil.example.com/wallpaper-cleaner/releases'):
+            with self.state.lock:
+                self.state.update = dict(update.empty_state(), status='latest', url=cached)
+
+            with mock.patch.object(core, 'open_url') as opener:
+                status, _headers, _body = self.post('/api/open', {'target': 'release'},
+                                                    token=self.token())
+
+            self.assertEqual(status, 200, f'cached={cached!r}')
+            opener.assert_called_once_with(update.LATEST_RELEASE_URL)
+
+    def test_open_rejects_unknown_targets(self):
+        """回归守卫：这个接口最后会让系统去打开地址，不能变成"面板能打开任何东西"的通道"""
+        for target in ('https://evil.example.com', 'file:///C:/Windows/System32/calc.exe',
+                       '', None, 123, ['repo']):
+            with mock.patch.object(core, 'open_url') as opener:
+                status, _headers, _body = self.post('/api/open', {'target': target},
+                                                    token=self.token())
+
+            self.assertEqual(status, 400, f'target={target!r} 应当被拒绝')
+            opener.assert_not_called()
+
+    def test_open_reports_a_system_failure(self):
+        with mock.patch.object(core, 'open_url', side_effect=OSError('没有可用的默认浏览器')):
+            status, _headers, body = self.post('/api/open', {'target': 'repo'}, token=self.token())
+
+        self.assertEqual(status, 500)
+        self.assertIn('没有可用的默认浏览器', json.loads(body.decode('utf-8'))['error'])
+
+    def test_write_endpoints_require_the_panel_token(self):
+        with mock.patch.object(core, 'open_url') as opener:
+            check, _headers, _body = self.post('/api/update/check', {}, token=None)
+            opened, _headers, _body = self.post('/api/open', {'target': 'repo'}, token=None)
+
+        self.assertEqual(check, 403)
+        self.assertEqual(opened, 403)
+        opener.assert_not_called()
 
 
 if __name__ == '__main__':

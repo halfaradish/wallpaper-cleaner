@@ -275,6 +275,22 @@
   </div>
 </div>
 
+<!-- 发现新版本：检查更新查出有更新的版本时弹出来，更新说明按纯文本显示（不渲染 Markdown） -->
+<div class="overlay hidden" id="update-overlay">
+  <div class="dialog">
+    <h3>发现新版本</h3>
+    <p class="dialog-lead">
+      新版本 <strong id="update-latest">—</strong>，当前版本 <strong id="update-current">—</strong>。
+    </p>
+    <p class="meta" id="update-published"></p>
+    <pre class="joblog" id="update-notes"></pre>
+    <div class="dialog-actions">
+      <button class="btn ghost" id="btn-cancel-update">稍后</button>
+      <button class="btn" id="btn-goto-release">前往 GitHub 下载</button>
+    </div>
+  </div>
+</div>
+
 <!-- 高级：位置设置 / 运行日志 / 关于 -->
 <aside class="drawer wide hidden" id="advanced-drawer">
   <header class="drawer-head">
@@ -320,6 +336,11 @@
       <p class="meta" id="about-version">—</p>
       <p class="meta" id="about-config">—</p>
       <p class="meta" id="about-logs">—</p>
+      <p class="meta" id="about-update">—</p>
+      <div class="drawer-actions">
+        <button class="btn ghost" id="btn-check-update">检查更新</button>
+        <button class="btn ghost" id="btn-open-repo">GitHub 仓库</button>
+      </div>
     </section>
 
   </div>

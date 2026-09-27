@@ -27,6 +27,7 @@ from urllib.parse import urlparse, parse_qs
 
 from . import core
 from . import steamapi
+from . import update
 from . import __version__
 
 def _find_static_dir():
@@ -99,6 +100,9 @@ class PanelState:
         self.autodetect = (None, None)
         # Steam 可用性：unknown → probing → ok / unavailable，由后台探测线程更新
         self.steam = _empty_steam_state()
+        # 检查更新的结果：unknown → checking → latest / outdated / failed，同样由后台线程写。
+        # 只存在内存里：重启面板就当没查过，不会留下一份过期的"已是最新"糊弄人。
+        self.update = update.empty_state()
         # 本会话内已成功取消订阅/重新订阅的 ID。仅存在内存里：Steam 改订阅状态与
         # 本地缓存刷新之间有时间差，这些 ID 用来在面板上标出"等待 Steam 同步"，
         # 同时把刚重新订阅的目录挡在删除白名单之外。重扫后自然失去意义。
@@ -109,6 +113,11 @@ class PanelState:
         """给面板看的 Steam 状态快照"""
         with self.lock:
             return dict(self.steam)
+
+    def update_status(self):
+        """给面板看的更新检查状态快照"""
+        with self.lock:
+            return dict(self.update)
 
     def start_job(self, job_type, worker):
         """同一时间只允许一个任务；返回 (job_id, error)"""
@@ -239,6 +248,27 @@ def start_steam_probe(state):
         core.logger.debug('Steam 状态: %s %s', result.get('status'), result.get('detail') or '')
         with state.lock:
             state.steam = result
+
+    threading.Thread(target=worker, daemon=True).start()
+    return True
+
+
+def start_update_check(state):
+    """在后台查一次有没有新版本，立即返回
+
+    和 Steam 探测一样不走任务槽：查更新最多等十秒，不该挡住扫描，也不该让用户看到
+    "检查更新就是一个任务"。请求本身在 update 模块里发，全程不拉子进程。
+    """
+    with state.lock:
+        if state.update.get('status') == 'checking':
+            return False
+        state.update = dict(update.empty_state(), status='checking',
+                            current=__version__, checked_at=datetime.now().strftime('%H:%M:%S'))
+
+    def worker():
+        result = update.check(__version__)
+        with state.lock:
+            state.update = result
 
     threading.Thread(target=worker, daemon=True).start()
     return True
@@ -683,6 +713,10 @@ class PanelHandler(BaseHTTPRequestHandler):
             return self._post_unsubscribe(body)
         if parsed.path == '/api/resubscribe':
             return self._post_resubscribe(body)
+        if parsed.path == '/api/update/check':
+            return self._post_update_check()
+        if parsed.path == '/api/open':
+            return self._post_open(body)
         return self._send_json({'error': '未知接口'}, 404)
 
     # ---------- 具体接口 ----------
@@ -700,6 +734,7 @@ class PanelHandler(BaseHTTPRequestHandler):
             'log_file': core.latest_log_file(),
             'recycle_supported': sys.platform == 'win32',
             'steam': state.steam_status(),
+            'update': state.update_status(),
             'session_unsubscribed': session_unsubscribed,
             'session_resubscribed': session_resubscribed,
             'version': __version__,
@@ -876,6 +911,41 @@ class PanelHandler(BaseHTTPRequestHandler):
 
         core.logger.info('面板打开 Steam 页面: %s', wid)
         return self._send_json({'ok': True})
+
+    # ---------- 检查更新 / 打开链接 ----------
+
+    def _post_update_check(self):
+        """查有没有新版本。后台执行，接口立刻返回，结果进 /api/state"""
+        state = self.server.state
+        if not start_update_check(state):
+            return self._send_json(
+                {'ok': False, 'error': '正在检查更新，请稍候', 'update': state.update_status()}, 409
+            )
+        return self._send_json({'ok': True, 'update': state.update_status()})
+
+    def _post_open(self, body):
+        """打开仓库页或 Release 页
+
+        地址由服务端按 target 自己解析，客户端给不了任意链接——这个接口最后会让系统
+        去打开一个地址，不能让它变成"面板能打开任何东西"的通道。
+        """
+        target = body.get('target')
+        if target == 'repo':
+            url = update.REPO_URL
+        elif target == 'release':
+            # 缓存里的那个地址是上次检查更新带回来的，用前再校验一遍是不是本仓库的页面
+            cached = self.server.state.update_status().get('url') or ''
+            url = cached if update.is_repo_url(cached) else update.LATEST_RELEASE_URL
+        else:
+            return self._send_json({'error': '未知的跳转目标'}, 400)
+
+        try:
+            core.open_url(url)
+        except OSError as e:
+            return self._send_json({'error': f'打开链接失败：{e}'}, 500)
+
+        core.logger.info('面板打开链接: %s', url)
+        return self._send_json({'ok': True, 'url': url})
 
     # ---------- 取消订阅 / 重新订阅 ----------
 

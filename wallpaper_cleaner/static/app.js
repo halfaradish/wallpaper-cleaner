@@ -15,6 +15,7 @@ const state = {
   sessionUnsubscribed: new Set(), // 本会话已取消订阅，等待 Steam 同步
   sessionResubscribed: new Set(), // 本会话已重新订阅，等待 Steam 同步
   steam: null,
+  update: null,
   subscribedOpen: false,
   subFilter: '',
   sortOrphans: 'default',
@@ -24,6 +25,7 @@ const state = {
   logTimer: null,
   overlayTimer: null,
   steamTimer: null,
+  updateTimer: null,
   manualWid: '',
 };
 
@@ -637,6 +639,106 @@ function renderAbout() {
   $('about-logs').textContent = state.logFile
     ? `日志目录：${dirname(state.logFile)}`
     : '日志目录：—';
+  renderAboutUpdate();
+}
+
+/* ---------------- 检查更新 ---------------- */
+
+// 只在点「检查更新」时才联网：一次检查就是一次对外的请求，不该由"打开面板"这个
+// 动作替用户决定。查完的结果留在服务端，重开抽屉还能看到上次的结论。
+function renderAboutUpdate() {
+  const info = state.update || { status: 'unknown' };
+  const at = info.checked_at ? ` · 检查于 ${info.checked_at}` : '';
+  let text = '更新：尚未检查';
+  if (info.status === 'checking') text = '更新：正在检查…';
+  else if (info.status === 'latest') text = `更新：已是最新（${info.latest || info.current}）${at}`;
+  else if (info.status === 'outdated') text = `更新：有新版本 ${info.latest}（当前 ${info.current}）${at}`;
+  else if (info.status === 'failed') text = `更新：暂时查不了 —— ${info.error || '原因未知'}`;
+  $('about-update').textContent = text;
+}
+
+function setUpdateBusy(busy) {
+  const btn = $('btn-check-update');
+  btn.disabled = busy;
+  btn.textContent = busy ? '正在检查…' : '检查更新';
+}
+
+async function checkUpdate() {
+  clearTimeout(state.updateTimer);
+  state.update = Object.assign({}, state.update, { status: 'checking' });
+  setUpdateBusy(true);
+  renderAboutUpdate();
+  try {
+    await api('/api/update/check', { body: {} });
+  } catch (e) {
+    // 409 表示已经在检查了，接着轮询就是；其它错误由轮询把真实状态刷出来
+  }
+  pollUpdateStatus();
+}
+
+function pollUpdateStatus() {
+  clearTimeout(state.updateTimer);
+  let tries = 0;
+  const tick = async () => {
+    tries += 1;
+    let info = null;
+    try {
+      const data = await api('/api/state');
+      info = data.update;
+    } catch (e) {
+      setUpdateBusy(false);
+      return;
+    }
+    if (!info) {
+      setUpdateBusy(false);
+      return;
+    }
+    state.update = info;
+    renderAboutUpdate();
+    if (info.status === 'checking' && tries < 40) {
+      state.updateTimer = setTimeout(tick, 500);
+      return;
+    }
+    // 无论结论是什么，按钮都要能再点一次；失败也不是"功能坏了"，重试就好
+    setUpdateBusy(false);
+    if (info.status === 'outdated') openUpdateDialog();
+    else if (info.status === 'latest') toast(`已是最新版本（${info.latest || info.current}）`, 'ok');
+    else if (info.status === 'failed') toast(info.error || '检查更新失败', 'error');
+    else if (info.status === 'checking') toast('检查更新超时了，过一会儿再试', 'error');
+  };
+  state.updateTimer = setTimeout(tick, 400);
+}
+
+function openUpdateDialog() {
+  const info = state.update || {};
+  $('update-latest').textContent = info.latest || '—';
+  $('update-current').textContent = info.current || window.__PANEL_VERSION__ || '—';
+  $('update-published').textContent = info.published_at ? `发布于 ${info.published_at}` : '';
+  // 说明正文来自 Release，按纯文本显示：不渲染 Markdown，也就没有注入这回事
+  $('update-notes').textContent = info.notes || '（这个版本没有写更新说明）';
+  $('update-overlay').classList.remove('hidden');
+}
+
+function closeUpdateDialog() {
+  $('update-overlay').classList.add('hidden');
+}
+
+async function gotoRelease() {
+  try {
+    await api('/api/open', { body: { target: 'release' } });
+    closeUpdateDialog();
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function openRepo() {
+  try {
+    await api('/api/open', { body: { target: 'repo' } });
+    toast('已在浏览器中打开 GitHub 仓库', 'ok');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
 }
 
 function renderAll() {
@@ -658,6 +760,7 @@ async function loadState() {
   state.logFile = data.log_file;
   state.recycleSupported = data.recycle_supported;
   if (data.steam) state.steam = data.steam;
+  if (data.update) state.update = data.update;
   state.sessionUnsubscribed = new Set(data.session_unsubscribed || []);
   state.sessionResubscribed = new Set(data.session_resubscribed || []);
   if (data.version) window.__PANEL_VERSION__ = data.version;
@@ -1337,6 +1440,12 @@ function bind() {
 
   $('opt-log-auto').addEventListener('change', syncLogTimer);
 
+  // 关于：检查更新与 GitHub 仓库
+  $('btn-check-update').addEventListener('click', checkUpdate);
+  $('btn-open-repo').addEventListener('click', openRepo);
+  $('btn-cancel-update').addEventListener('click', closeUpdateDialog);
+  $('btn-goto-release').addEventListener('click', gotoRelease);
+
   // 扫描之后目录被删掉或换掉时缩略图会 404，把坏图换成占位框，别留一个破图标
   document.addEventListener('error', (e) => {
     const img = e.target;
@@ -1374,6 +1483,7 @@ function bind() {
     closeResubConfirm();
     closeSteamGuide();
     closeOrphanHelp();
+    closeUpdateDialog();
     closeDrawer('advanced-drawer');
   });
 
@@ -1384,6 +1494,7 @@ function bind() {
     ['resub-overlay', closeResubConfirm],
     ['steam-overlay', closeSteamGuide],
     ['orphan-help-overlay', closeOrphanHelp],
+    ['update-overlay', closeUpdateDialog],
   ].forEach(([id, close]) => {
     $(id).addEventListener('click', (e) => {
       if (e.target === e.currentTarget) close();
