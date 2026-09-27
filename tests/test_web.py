@@ -304,7 +304,9 @@ class TestDeleteGuards(DeleteGuardTestCase):
         self.assertEqual(outcome['skipped'], [])
         self.assertEqual(len(outcome['deleted']), 1)
         self.assertEqual(outcome['failed'], [])
-        self.assertEqual(outcome['freed_bytes'], 128)
+        # 释放量按磁盘占用报，不写死 128（小文件按 4 KB 簇对齐会变成 4096）
+        self.assertEqual(outcome['freed_bytes'], core.usage_bytes(items[0]))
+        self.assertGreaterEqual(outcome['freed_bytes'], 128)
         self.assertFalse(os.path.exists(folder))
 
     def test_other_items_are_not_affected_by_a_protected_one(self):
@@ -1040,6 +1042,25 @@ class TestSteamEndpoints(PanelEndpointTestCase):
         self.assertEqual(data['steam']['status'], 'unavailable')
         self.assertEqual(data['session_unsubscribed'], ['1'])
         self.assertEqual(data['session_resubscribed'], ['2'])
+
+    def test_state_scan_carries_both_size_measures(self):
+        """面板要显示「标注大小 + 磁盘占用」，所以扫描结果里两个口径都要带上"""
+        self.write_cache([])
+        self.make_folder('3333333333',
+                         minutes_old=core.FRESH_DOWNLOAD_GRACE_SECONDS // 60 + 5)
+        self.write_acf(installed_ids=['3333333333'])  # 内容记录还在 → 标注大小有值
+        self.scan_now()
+
+        status, _headers, body = self.get('/api/state')
+        data = json.loads(body.decode('utf-8'))
+        entry = data['scan']['orphans'][0]
+
+        self.assertEqual(status, 200)
+        self.assertEqual(entry['size_bytes'], 128)
+        self.assertGreaterEqual(entry['alloc_bytes'], entry['size_bytes'])
+        self.assertEqual(entry['declared_bytes'], 1536)  # write_acf 里写的 size
+        self.assertEqual(entry['declared_size'], core.format_size(1536))
+        self.assertGreaterEqual(data['scan']['orphan_usage_bytes'], 128)
 
 
 if __name__ == '__main__':

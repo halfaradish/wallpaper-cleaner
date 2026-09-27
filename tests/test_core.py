@@ -892,6 +892,53 @@ class TestScanDisplayFallback(SandboxTestCase):
         self.assertEqual(entry['thumb_source'], 'we')
         self.assertTrue(entry['content_missing'])
 
+    def test_scan_reports_both_size_measures(self):
+        """每个条目都给两个口径：文件字节数（精确）与磁盘占用（簇对齐的估算）"""
+        workshop_dir, json_path, subscriptions = self.make_workshop(orphans=['2222222222'])
+        result = core.scan(workshop_dir, subscriptions, json_path=json_path)
+
+        entry = result['orphans'][0]
+        self.assertEqual(entry['size_bytes'], 128)  # 精确值不受口径变化影响
+        self.assertGreaterEqual(entry['alloc_bytes'], entry['size_bytes'])
+        # 汇总也对称地给两份：文件字节数与磁盘占用
+        self.assertEqual(result['orphan_bytes'], 128)
+        self.assertEqual(result['orphan_usage_bytes'],
+                         sum(core.usage_bytes(i) for i in result['orphans']))
+        self.assertEqual(result['unknown_usage_bytes'], 0)
+
+    def test_orphan_declared_size_comes_from_steam_record(self):
+        """残留如果还留着 Steam 的内容记录，就有「标注大小」可看（重新订阅前估流量用）"""
+        workshop_dir, json_path, subscriptions = self.make_workshop(orphans=['2222222222'])
+
+        result = core.scan(workshop_dir, subscriptions, json_path=json_path,
+                           extra_sizes={'2222222222': 15692193})
+
+        entry = result['orphans'][0]
+        self.assertEqual(entry['declared_bytes'], 15692193)
+        self.assertEqual(entry['declared_size'], core.format_size(15692193))
+
+    def test_orphan_without_steam_record_has_no_declared_size(self):
+        """内容记录被 Steam 删掉后就只剩「未知」——这张表里不会拿实测值冒充标注值"""
+        workshop_dir, json_path, subscriptions = self.make_workshop(orphans=['2222222222'])
+        result = core.scan(workshop_dir, subscriptions, json_path=json_path)
+        self.assertEqual(result['orphans'][0]['declared_size'], '未知')
+        self.assertEqual(result['orphans'][0]['declared_bytes'], 0)
+
+    def test_steam_record_wins_over_we_label(self):
+        """两张表的标注大小用同一套判定：Steam 记录的字节数优先，WE 的标注字符串只作回退"""
+        workshop_dir, json_path, subscriptions = self.make_workshop(subscribed_ids=['1111111111'])
+        result = core.scan(workshop_dir, subscriptions, json_path=json_path,
+                           extra_sizes={'1111111111': 54567690})
+        entry = result['subscribed'][0]
+        self.assertEqual(entry['declared_bytes'], 54567690)
+        self.assertEqual(entry['declared_size'], core.format_size(54567690))
+
+        # 没有 Steam 记录时退回 WE 缓存里的标注字符串（夹具里是 '1.0 MB'）
+        result = core.scan(workshop_dir, subscriptions, json_path=json_path)
+        entry = result['subscribed'][0]
+        self.assertEqual(entry['declared_size'], '1.0 MB')
+        self.assertEqual(entry['declared_bytes'], 0)
+
 
 class TestScanWithSteamRecord(SandboxTestCase):
     def test_steam_subscribed_id_is_not_orphan(self):
@@ -1003,7 +1050,10 @@ class TestDelete(SandboxTestCase):
         outcome = core.delete_folders(result['orphans'][:1], workshop_dir)
         self.assertEqual(len(outcome['deleted']), 1)
         self.assertEqual(outcome['failed'], [])
-        self.assertEqual(outcome['freed_bytes'], 128)
+        # 释放量按磁盘占用报（拿不到簇大小时退回文件字节数），所以这里跟 scan 给的那一项对齐，
+        # 不写死 128——小文件按 4 KB 簇对齐会变成 4096，写死就把平台差异钉进断言了
+        self.assertEqual(outcome['freed_bytes'], core.usage_bytes(result['orphans'][0]))
+        self.assertGreaterEqual(outcome['freed_bytes'], 128)
 
         remaining = sorted(os.listdir(workshop_dir))
         self.assertIn('1111111111', remaining)
@@ -1139,6 +1189,65 @@ class TestFormatSize(unittest.TestCase):
         self.assertEqual(core.format_size(1024), '1.00 KB')
         self.assertEqual(core.format_size(1024 * 1024 * 3), '3.00 MB')
         self.assertEqual(core.format_size(1024 ** 4 * 2), '2.00 TB')
+
+
+class TestDirUsage(SandboxTestCase):
+    """一次遍历算出两个口径：文件字节数（精确）与磁盘占用（按簇对齐的估算）"""
+
+    def make_tree(self):
+        folder = os.path.join(self.tmp, 'wp')
+        sub = os.path.join(folder, 'shaders')
+        os.makedirs(sub)
+        self.write(os.path.join(folder, 'preview.jpg'), 'x' * 100)
+        self.write(os.path.join(folder, 'scene.pkg'), 'x' * 5000)
+        self.write(os.path.join(sub, 'blob.dxs'), 'x' * 100)
+        return folder
+
+    def test_both_numbers_with_cluster_size(self):
+        folder = self.make_tree()
+        exact, allocated = core.get_dir_usage(folder, cluster_size=4096)
+        self.assertEqual(exact, 100 + 5000 + 100)
+        # 100 B→4096、5000 B→8192、子目录自身→4096、子目录里的 100 B→4096
+        self.assertEqual(allocated, 4096 + 8192 + 4096 + 4096)
+
+    def test_without_cluster_size_only_exact(self):
+        """拿不到簇大小时磁盘占用为 0，由调用方退回文件字节数"""
+        folder = self.make_tree()
+        self.assertEqual(core.get_dir_usage(folder), (5200, 0))
+        self.assertEqual(core.get_dir_size(folder), 5200)
+
+    def test_matches_old_get_dir_size(self):
+        folder = os.path.join(self.tmp, 'empty')
+        os.makedirs(folder)
+        self.assertEqual(core.get_dir_usage(folder, cluster_size=4096), (0, 0))
+
+
+class TestVolumeClusterSize(unittest.TestCase):
+    def test_non_windows_returns_zero(self):
+        with mock.patch.object(core.sys, 'platform', 'linux'):
+            core._cluster_size_cache.clear()
+            self.assertEqual(core.volume_cluster_size('D:\\anything'), 0)
+
+    def test_real_volume_does_not_raise(self):
+        """真机上要么拿到簇大小（2 的幂），要么拿不到返回 0，都不该抛异常"""
+        core._cluster_size_cache.clear()
+        size = core.volume_cluster_size(os.path.abspath(os.sep))
+        core._cluster_size_cache.clear()
+        self.assertGreaterEqual(size, 0)
+        if size:
+            self.assertEqual(size & (size - 1), 0, f'簇大小应当是 2 的幂: {size}')
+
+
+class TestUsageBytes(unittest.TestCase):
+    def test_prefers_disk_usage(self):
+        self.assertEqual(core.usage_bytes({'size_bytes': 128, 'alloc_bytes': 4096}), 4096)
+
+    def test_falls_back_to_file_bytes(self):
+        self.assertEqual(core.usage_bytes({'size_bytes': 128, 'alloc_bytes': 0}), 128)
+        self.assertEqual(core.usage_bytes({'size_bytes': 128}), 128)
+
+    def test_missing_item_is_zero(self):
+        self.assertEqual(core.usage_bytes({}), 0)
 
 
 class TestLogTail(SandboxTestCase):
