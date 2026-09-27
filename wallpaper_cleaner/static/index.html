@@ -19,6 +19,8 @@
     </div>
   </div>
   <div class="actions">
+    <button class="steam-badge unknown" id="steam-badge"
+      title="取消订阅 / 重新订阅需要 Steam 在运行，点这里检测">Steam 未检测 · 检测</button>
     <button class="btn" id="btn-scan">重新扫描</button>
     <button class="btn ghost" id="btn-advanced">高级</button>
   </div>
@@ -55,13 +57,15 @@
       <h2>待清理 <span class="count" id="orphan-count">0</span></h2>
       <div class="card-tools">
         <label class="chk"><input type="checkbox" id="check-all"> 全选已取消订阅</label>
+        <button class="btn" id="btn-resubscribe" disabled>重新订阅选中</button>
         <button class="btn danger" id="btn-delete" disabled>清理选中</button>
       </div>
     </div>
     <p class="hint">
       只清理已取消订阅的壁纸残留，正在使用的壁纸不会被触碰。
       标记为 <span class="badge unknown">无法确定的文件夹</span> 的来源不明，默认不勾选，需要时请手动勾选。
-      点标题可在资源管理器中打开该壁纸所在的文件夹。
+      点标题可在资源管理器中打开该壁纸所在的文件夹；想把某张壁纸重新订阅回来，
+      勾选它再点「重新订阅选中」，Steam 会自动下载回本地。
     </p>
     <div class="tablewrap" id="orphan-wrap">
       <table>
@@ -88,10 +92,16 @@
   </section>
 
   <section class="card">
-    <button class="collapse" id="toggle-subscribed" aria-expanded="false">
-      <span>已订阅壁纸 <span class="count" id="sub-count">0</span></span>
-      <span class="chev" aria-hidden="true">▸</span>
-    </button>
+    <div class="card-head">
+      <button class="collapse-title" id="toggle-subscribed" aria-expanded="false">
+        <span class="chev" aria-hidden="true">▸</span>
+        <span>已订阅壁纸 <span class="count" id="sub-count">0</span></span>
+      </button>
+      <div class="card-tools">
+        <label class="chk"><input type="checkbox" id="check-all-sub"> 全选</label>
+        <button class="btn" id="btn-unsubscribe" disabled>取消订阅选中</button>
+      </div>
+    </div>
     <div class="hidden" id="subscribed-body">
       <div class="sub-tools">
         <input type="search" class="search" id="sub-filter" placeholder="按 workshop ID 或标题筛选…">
@@ -101,6 +111,7 @@
         <table>
           <thead>
             <tr>
+              <th class="col-check"></th>
               <th class="col-thumb">预览</th>
               <th>workshop ID</th>
               <th>标题</th>
@@ -149,6 +160,91 @@
     <div class="dialog-actions">
       <button class="btn ghost" id="btn-cancel-delete">取消</button>
       <button class="btn danger" id="btn-confirm-delete">确认清理</button>
+    </div>
+  </div>
+</div>
+
+<!-- 取消订阅确认 -->
+<div class="overlay hidden" id="unsub-overlay">
+  <div class="dialog">
+    <h3>取消订阅</h3>
+    <p class="dialog-lead">
+      即将对 <strong id="unsub-count">0</strong> 张壁纸取消订阅，共
+      <strong id="unsub-size">0 B</strong>：
+    </p>
+    <ul class="confirm-list" id="unsub-list"></ul>
+
+    <label class="chk mode" id="mode-only-row">
+      <input type="radio" name="unsub-mode" id="mode-only" checked>
+      <span>仅取消订阅
+        <span class="mode-note">本工具不主动删本地文件。Steam 客户端通常会在取消订阅后自行删除它们，
+          留下来的残留可以在下次扫描后清理。</span></span>
+    </label>
+    <label class="chk mode" id="mode-delete-row">
+      <input type="radio" name="unsub-mode" id="mode-delete">
+      <span>取消订阅并删除文件
+        <span class="mode-note">确保空间立刻释放。删除后本工具无法一键找回，
+          需要到 Steam 创意工坊重新订阅并重新下载。</span></span>
+    </label>
+
+    <div class="hidden" id="unsub-delete-options">
+      <label class="chk recycle" id="unsub-recycle-row">
+        <input type="checkbox" id="opt-unsub-recycle" checked>
+        <span>删除到回收站（可恢复）</span>
+      </label>
+      <p class="warn-text hidden" id="unsub-permanent-warning">
+        ⚠ 已关闭回收站：这些文件将被永久删除，无法恢复。
+      </p>
+    </div>
+
+    <div class="dialog-actions">
+      <button class="btn ghost" id="btn-cancel-unsub">取消</button>
+      <button class="btn" id="btn-confirm-unsub">确认取消订阅</button>
+    </div>
+  </div>
+</div>
+
+<!-- 重新订阅确认 -->
+<div class="overlay hidden" id="resub-overlay">
+  <div class="dialog">
+    <h3>重新订阅</h3>
+    <p class="dialog-lead">
+      即将重新订阅 <strong id="resub-count">0</strong> 张壁纸：
+    </p>
+    <ul class="confirm-list" id="resub-list"></ul>
+    <p class="dialog-lead">
+      Steam 会把内容重新下载回本地（需要联网并占用磁盘空间）。
+      文件还在本地的通常不必整包重下，但具体由 Steam 决定。
+    </p>
+    <div class="dialog-actions">
+      <button class="btn ghost" id="btn-cancel-resub">取消</button>
+      <button class="btn" id="btn-confirm-resub">确认重新订阅</button>
+    </div>
+  </div>
+</div>
+
+<!-- 连接 Steam 的引导：连不上时不丢一句报错，而是说清原因与下一步 -->
+<div class="overlay hidden" id="steam-overlay">
+  <div class="dialog">
+    <h3>需要连接 Steam</h3>
+    <p class="dialog-lead">
+      取消订阅与重新订阅走的是 Steam 官方接口，效果等同于你在 Steam 客户端里点一下，
+      因此需要 Steam 正在运行。本工具不会接触你的账号密码，也不修改任何游戏文件。
+    </p>
+    <div class="notice warn" id="steam-reason-box">
+      <span id="steam-reason">Steam 当前不可用</span>
+    </div>
+    <p class="meta hidden" id="steam-detail"></p>
+    <ol class="guide-steps">
+      <li>启动 Steam 客户端并登录</li>
+      <li>保持客户端在运行，回到本页点「重新检测」</li>
+      <li>本工具用 Wallpaper Engine 自带的 steam_api64.dll 连接 Steam；那份不可用时，
+        才会退而使用本机其它 Steam 游戏自带的版本</li>
+    </ol>
+    <div class="dialog-actions">
+      <button class="btn ghost hidden" id="btn-steam-manual">在 Steam 中手动操作</button>
+      <button class="btn ghost" id="btn-steam-launch">启动 Steam</button>
+      <button class="btn" id="btn-steam-retry">重新检测</button>
     </div>
   </div>
 </div>

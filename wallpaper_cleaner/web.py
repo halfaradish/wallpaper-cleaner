@@ -4,8 +4,13 @@
 1. CSRF：所有写操作必须带 X-Panel-Token 头（自定义头会触发跨域预检，而本服务不返回任何
    CORS 头，恶意网页因此无法构造请求）；同时校验 Origin 与本次请求的 Host 一致。
 2. 路径穿越：删除接口只接受 workshop ID，不接受路径；每个 ID 都会重新做单层目录名校验。
-3. 只删已确认的孤儿：删除的每一项都必须出现在最近一次扫描的待清理列表中，
-   且删除前会重新读取订阅缓存，扫描后被重新订阅的壁纸会被跳过。
+3. 只动已确认的对象：删除的每一项必须来自最近一次扫描的待清理列表，取消订阅的每一项必须
+   来自最近一次扫描的已订阅列表，重新订阅的每一项必须来自待清理列表，且都要带同一份
+   scan_id；执行前还会再核对一次真实订阅状态，扫描之后被订阅/取消订阅过的壁纸会被跳过。
+
+取消订阅与重新订阅走 Steam 官方 Steamworks 接口（steamapi 模块），作用于账号的订阅
+状态——等价于在 Steam 客户端里点一下。本服务不接触账号凭据，也不写 Steam 或
+Wallpaper Engine 的任何文件。
 """
 
 import json
@@ -21,6 +26,7 @@ from socketserver import ThreadingMixIn
 from urllib.parse import urlparse, parse_qs
 
 from . import core
+from . import steamapi
 from . import __version__
 
 def _find_static_dir():
@@ -67,8 +73,21 @@ def _line(level, text):
     return {'level': level, 'text': text, 'time': datetime.now().strftime('%H:%M:%S')}
 
 
+def _empty_steam_state():
+    """Steam 状态初值：面板据此显示灰色的「未检测」"""
+    return {
+        'status': 'unknown',      # unknown / probing / ok / unavailable
+        'reason': '',
+        'detail': '',
+        'hint': '',
+        'subscribed_count': None,
+        'dll_path': '',
+        'checked_at': '',
+    }
+
+
 class PanelState:
-    """面板运行期共享状态：任务表、最近一次扫描结果、访问令牌"""
+    """面板运行期共享状态：任务表、最近一次扫描结果、访问令牌、Steam 连接状态"""
 
     def __init__(self):
         self.token = secrets.token_urlsafe(24)
@@ -78,6 +97,18 @@ class PanelState:
         self.active_job = None
         self.last_scan = None
         self.autodetect = (None, None)
+        # Steam 可用性：unknown → probing → ok / unavailable，由后台探测线程更新
+        self.steam = _empty_steam_state()
+        # 本会话内已成功取消订阅/重新订阅的 ID。仅存在内存里：Steam 改订阅状态与
+        # 本地缓存刷新之间有时间差，这些 ID 用来在面板上标出"等待 Steam 同步"，
+        # 同时把刚重新订阅的目录挡在删除白名单之外。重扫后自然失去意义。
+        self.session_unsubscribed = set()
+        self.session_resubscribed = set()
+
+    def steam_status(self):
+        """给面板看的 Steam 状态快照"""
+        with self.lock:
+            return dict(self.steam)
 
     def start_job(self, job_type, worker):
         """同一时间只允许一个任务；返回 (job_id, error)"""
@@ -175,6 +206,7 @@ def resolve_paths(state):
     return {
         'json_path': json_path,
         'workshop_dir': workshop_dir,
+        'steam_dll_path': info['steam_dll_path'],
         'source': source,
         'hint': hint,
         'config_file': info['config_file'],
@@ -185,6 +217,31 @@ def resolve_paths(state):
         'auto_json_path': info['auto_json_path'],
         'auto_workshop_dir': info['auto_workshop_dir'],
     }
+
+
+def start_steam_probe(state):
+    """在后台探测一次 Steam 可用性，立即返回
+
+    刻意不走任务槽：探测可能耗时一两秒，而扫描/删除才是主线，不能让它挡住扫描，
+    也不该让用户看到"探测中就是一个任务"。探测完就断开连接（steamapi.probe 里做）。
+    """
+    with state.lock:
+        if state.steam.get('status') == 'probing':
+            return False
+        state.steam = dict(_empty_steam_state(), status='probing', checked_at=datetime.now().strftime('%H:%M:%S'))
+
+    paths = resolve_paths(state)
+
+    def worker():
+        result = steamapi.probe(
+            paths['json_path'], paths['workshop_dir'], paths['steam_dll_path'] or ''
+        )
+        core.logger.debug('Steam 状态: %s %s', result.get('status'), result.get('detail') or '')
+        with state.lock:
+            state.steam = result
+
+    threading.Thread(target=worker, daemon=True).start()
+    return True
 
 
 def _scan_worker(state, job):
@@ -232,8 +289,17 @@ def _scan_worker(state, job):
     return result
 
 
-def _delete_worker(state, job, scan, items, recycle):
+def _delete_worker(state, job, scan, items, recycle, just_resubscribed=()):
     emit = state.progress(job)
+
+    # 本会话里刚重新订阅的项：Steam 那边订阅状态已经改回来了，但本地 ACF/缓存还没刷新，
+    # 下面那套"重读订阅记录"的复核看不出它们已经回到订阅列表，只能由我们自己记住。
+    recent = {item['wid'] for item in items} & set(just_resubscribed)
+    if recent:
+        for item in [i for i in items if i['wid'] in recent]:
+            emit(0, len(items), f"跳过 {core.item_label(item)}：刚重新订阅，等待 Steam 同步", 'warn')
+        items = [item for item in items if item['wid'] not in recent]
+
     total = len(items)
     emit(0, total, '正在复核订阅列表…', 'info')
 
@@ -273,9 +339,10 @@ def _delete_worker(state, job, scan, items, recycle):
         )
 
     # skipped 仍是全部跳过项；另外按原因分开报，面板才能把提示说清楚
-    outcome['skipped'] = [i['wid'] for i in revived + fresh]
+    outcome['skipped'] = [i['wid'] for i in revived + fresh] + sorted(recent)
     outcome['skipped_subscribed'] = [i['wid'] for i in revived]
     outcome['skipped_fresh'] = [i['wid'] for i in fresh]
+    outcome['skipped_resubscribed'] = sorted(recent)
     with state.lock:
         # 磁盘内容已变化，旧扫描结果作废，避免下一次删除基于过期列表
         state.last_scan = None
@@ -286,6 +353,163 @@ def _delete_worker(state, job, scan, items, recycle):
         core.format_size(outcome['freed_bytes']),
     )
     return outcome
+
+
+def _steam_paths(state):
+    """当前生效的路径配置，供 steamapi 定位 dll"""
+    paths = resolve_paths(state)
+    return paths['json_path'], paths['workshop_dir'], paths['steam_dll_path'] or ''
+
+
+def _steam_failure(reason, detail):
+    """把原因码与原始说明合成一句给用户看的话"""
+    hint = steamapi.hint_for(reason)
+    detail = (detail or '').strip()
+    if detail and detail != hint and hint not in detail:
+        return f'{hint}（{detail}）'
+    return hint
+
+
+def _connect_steam(state):
+    """按当前路径配置连接 Steam，失败抛 ScanError（消息直接给用户看）"""
+    json_path, workshop_dir, dll_path = _steam_paths(state)
+    ok, reason, detail = steamapi.connect(json_path, workshop_dir, dll_path)
+    if not ok:
+        raise core.ScanError(_steam_failure(reason, detail))
+
+
+def _unsubscribe_worker(state, job, scan, items, mode, recycle):
+    """批量取消订阅；mode 为 with_delete 时顺带清理本地目录
+
+    删除只针对"已确认生效"的项：UnsubscribeItem 返回 true 只说明 Steam 受理了
+    请求，订阅状态还没落下来就去删目录的话，Steam 可能因为仍在订阅而重新下载。
+    """
+    emit = state.progress(job)
+    total = len(items)
+    emit(0, total, '正在连接 Steam…', 'info')
+
+    try:
+        _connect_steam(state)
+        emit(0, total, '正在读取订阅列表…', 'info')
+        subscribed = steamapi.get_subscribed()
+        targets = [item for item in items if item['wid'] in subscribed]
+        skipped = [item for item in items if item['wid'] not in subscribed]
+        for item in skipped:
+            emit(0, total, f'跳过 {core.item_label(item)}：Steam 里已经不在订阅列表', 'warn')
+
+        accepted, failed = [], []
+        for index, item in enumerate(targets, 1):
+            wid = item['wid']
+            try:
+                if not steamapi.unsubscribe(wid):
+                    failed.append({'wid': wid, 'error': 'Steam 没有受理这次请求'})
+                    emit(index, total, f'取消订阅失败 {core.item_label(item)}', 'error')
+                    continue
+            except Exception as e:
+                failed.append({'wid': wid, 'error': str(e)})
+                emit(index, total, f'取消订阅失败 {core.item_label(item)}：{e}', 'error')
+                continue
+            accepted.append(wid)
+            emit(index, total, f'已提交取消订阅：{core.item_label(item)}')
+
+        emit(0, total, '正在确认订阅状态…', 'info')
+        confirmed = steamapi.confirm_unsubscribed(accepted) if accepted else set()
+        unconfirmed = [wid for wid in accepted if wid not in confirmed]
+        for wid in unconfirmed:
+            emit(0, total, f'已提交但未确认生效：{wid}（Steam 处理较慢，稍后重新扫描可核实）', 'warn')
+
+        outcome = {
+            'mode': mode,
+            'unsubscribed': sorted(confirmed),
+            'unconfirmed': unconfirmed,
+            'failed': failed,
+            'skipped': [item['wid'] for item in skipped],
+            'deleted': [],
+            'delete_failed': [],
+            'freed_bytes': 0,
+            'already_gone': 0,
+        }
+
+        if mode == 'with_delete' and confirmed:
+            emit(0, len(confirmed), '正在清理本地文件…', 'info')
+            chosen = [item for item in items if item['wid'] in confirmed]
+            # Steam 也在删同一个目录：目录已经不在了就是目的达成，不算失败
+            remaining = [item for item in chosen if os.path.isdir(item.get('path') or '')]
+            outcome['already_gone'] = len(chosen) - len(remaining)
+            if remaining:
+                deleted = core.delete_folders(
+                    remaining, scan['workshop_dir'], to_recycle_bin=recycle, on_progress=emit
+                )
+                outcome['deleted'] = deleted['deleted']
+                outcome['delete_failed'] = deleted['failed']
+                outcome['freed_bytes'] = deleted['freed_bytes']
+
+        with state.lock:
+            state.session_unsubscribed |= set(confirmed)
+            state.session_resubscribed -= set(confirmed)
+
+        core.logger.info(
+            '面板取消订阅完成: 成功 %d，未确认 %d，失败 %d，跳过 %d，清理目录 %d',
+            len(outcome['unsubscribed']), len(unconfirmed), len(failed), len(skipped),
+            len(outcome['deleted']),
+        )
+        return outcome
+    finally:
+        steamapi.shutdown()
+
+
+def _resubscribe_worker(state, job, scan, items):
+    """批量重新订阅（对象来自待清理列表里的残留目录）"""
+    emit = state.progress(job)
+    total = len(items)
+    emit(0, total, '正在连接 Steam…', 'info')
+
+    try:
+        _connect_steam(state)
+        emit(0, total, '正在读取订阅列表…', 'info')
+        subscribed = steamapi.get_subscribed()
+        targets = [item for item in items if item['wid'] not in subscribed]
+        skipped = [item for item in items if item['wid'] in subscribed]
+        for item in skipped:
+            emit(0, total, f'跳过 {core.item_label(item)}：这张壁纸已经在订阅列表中', 'warn')
+
+        accepted, failed = [], []
+        for index, item in enumerate(targets, 1):
+            wid = item['wid']
+            try:
+                if not steamapi.subscribe(wid):
+                    failed.append({'wid': wid, 'error': 'Steam 没有受理这次请求'})
+                    emit(index, total, f'重新订阅失败 {core.item_label(item)}', 'error')
+                    continue
+            except Exception as e:
+                failed.append({'wid': wid, 'error': str(e)})
+                emit(index, total, f'重新订阅失败 {core.item_label(item)}：{e}', 'error')
+                continue
+            accepted.append(wid)
+            emit(index, total, f'已提交重新订阅：{core.item_label(item)}')
+
+        emit(0, total, '正在确认订阅状态…', 'info')
+        confirmed = steamapi.confirm_subscribed(accepted) if accepted else set()
+        unconfirmed = [wid for wid in accepted if wid not in confirmed]
+        for wid in unconfirmed:
+            emit(0, total, f'已提交但未确认生效：{wid}（Steam 处理较慢，稍后重新扫描可核实）', 'warn')
+
+        with state.lock:
+            state.session_resubscribed |= set(confirmed)
+            state.session_unsubscribed -= set(confirmed)
+
+        core.logger.info(
+            '面板重新订阅完成: 成功 %d，未确认 %d，失败 %d，跳过 %d',
+            len(confirmed), len(unconfirmed), len(failed), len(skipped),
+        )
+        return {
+            'resubscribed': sorted(confirmed),
+            'unconfirmed': unconfirmed,
+            'failed': failed,
+            'skipped': [item['wid'] for item in skipped],
+        }
+    finally:
+        steamapi.shutdown()
 
 
 class PanelHandler(BaseHTTPRequestHandler):
@@ -449,6 +673,16 @@ class PanelHandler(BaseHTTPRequestHandler):
             return self._post_config(body)
         if parsed.path == '/api/autodetect':
             return self._post_autodetect()
+        if parsed.path == '/api/steam/probe':
+            return self._post_steam_probe()
+        if parsed.path == '/api/steam/launch':
+            return self._post_steam_launch()
+        if parsed.path == '/api/steam/page':
+            return self._post_steam_page(body)
+        if parsed.path == '/api/unsubscribe':
+            return self._post_unsubscribe(body)
+        if parsed.path == '/api/resubscribe':
+            return self._post_resubscribe(body)
         return self._send_json({'error': '未知接口'}, 404)
 
     # ---------- 具体接口 ----------
@@ -457,12 +691,17 @@ class PanelHandler(BaseHTTPRequestHandler):
         state = self.server.state
         with state.lock:
             active_job = state.active_job
+            session_unsubscribed = sorted(state.session_unsubscribed)
+            session_resubscribed = sorted(state.session_resubscribed)
         return {
             'paths': resolve_paths(state),
             'scan': state.last_scan,
             'active_job': active_job,
             'log_file': core.latest_log_file(),
             'recycle_supported': sys.platform == 'win32',
+            'steam': state.steam_status(),
+            'session_unsubscribed': session_unsubscribed,
+            'session_resubscribed': session_resubscribed,
             'version': __version__,
         }
 
@@ -505,9 +744,13 @@ class PanelHandler(BaseHTTPRequestHandler):
             }, 400)
 
         recycle = bool(body.get('recycle', True))
+        # 本会话刚重新订阅的 ID 一并交给 worker：本地订阅记录还没刷新，
+        # 只有我们自己知道它们已经回到订阅列表，不能当残留删掉
+        with state.lock:
+            just_resubscribed = set(state.session_resubscribed)
         job_id, error = state.start_job(
             'delete',
-            lambda job: _delete_worker(state, job, scan, items, recycle),
+            lambda job: _delete_worker(state, job, scan, items, recycle, just_resubscribed),
         )
         if not job_id:
             return self._send_json({'error': error}, 409)
@@ -594,6 +837,132 @@ class PanelHandler(BaseHTTPRequestHandler):
             'json_path': auto_json,
             'workshop_dir': auto_workshop,
         })
+
+    # ---------- Steam：状态与跳转 ----------
+
+    def _post_steam_probe(self):
+        """探测 Steam 是否可用。后台执行，接口立刻返回，结果进 /api/state"""
+        state = self.server.state
+        if not start_steam_probe(state):
+            return self._send_json(
+                {'ok': False, 'error': '正在检测中，请稍候', 'steam': state.steam_status()}, 409
+            )
+        return self._send_json({'ok': True, 'steam': state.steam_status()})
+
+    def _post_steam_launch(self):
+        """唤起 Steam 客户端（没在运行时由系统把它拉起来）"""
+        try:
+            core.open_url('steam://open/main')
+        except OSError as e:
+            return self._send_json({'error': f'启动 Steam 失败：{e}'}, 500)
+        core.logger.info('面板请求启动 Steam')
+        return self._send_json({'ok': True})
+
+    def _post_steam_page(self, body):
+        """在 Steam 客户端里打开某张壁纸的创意工坊页面
+
+        连不上 Steam 接口时的保底路径：把用户送到 Steam 里手动点一下。
+        """
+        wid = body.get('wid')
+        if not core.is_safe_wid(wid) or not str(wid).isdigit():
+            return self._send_json({'error': '非法的 workshop ID'}, 404)
+        if self._scan_item(wid) is None:
+            return self._send_json({'error': '该壁纸不在最近一次扫描结果里'}, 404)
+
+        try:
+            core.open_url(f'steam://url/CommunityFilePage/{wid}')
+        except OSError as e:
+            return self._send_json({'error': f'打开 Steam 页面失败：{e}'}, 500)
+
+        core.logger.info('面板打开 Steam 页面: %s', wid)
+        return self._send_json({'ok': True})
+
+    # ---------- 取消订阅 / 重新订阅 ----------
+
+    def _post_unsubscribe(self, body):
+        state = self.server.state
+        with state.lock:
+            scan = state.last_scan
+        if scan is None:
+            return self._send_json({'error': '请先扫描，再取消订阅'}, 409)
+        if body.get('scan_id') != scan['scanned_at']:
+            return self._send_json({'error': '扫描结果已过期，请重新扫描后再取消订阅'}, 409)
+
+        mode = body.get('mode') or 'only'
+        if mode not in ('only', 'with_delete'):
+            return self._send_json({'error': '未知的取消订阅方式'}, 400)
+
+        wids = body.get('wids')
+        if not isinstance(wids, list) or not wids:
+            return self._send_json({'error': '未选择任何壁纸'}, 400)
+        if len(wids) > 5000:
+            return self._send_json({'error': '单次选择的壁纸过多'}, 400)
+
+        # 只允许操作最近一次扫描确认仍在订阅的壁纸（执行前还会再跟 Steam 核对一次）
+        allowed = {item['wid']: item for item in scan['subscribed']}
+        items, rejected = [], []
+        for wid in wids:
+            key = wid if isinstance(wid, str) else str(wid)
+            if key in allowed:
+                items.append(allowed[key])
+            else:
+                rejected.append(key)
+        if rejected:
+            return self._send_json({
+                'error': '以下壁纸不在最近一次扫描的已订阅列表中，已拒绝整批操作',
+                'rejected': rejected[:50],
+            }, 400)
+
+        recycle = bool(body.get('recycle', True))
+        job_id, error = state.start_job(
+            'unsubscribe',
+            lambda job: _unsubscribe_worker(state, job, scan, items, mode, recycle),
+        )
+        if not job_id:
+            return self._send_json({'error': error}, 409)
+        core.logger.info(
+            '面板请求取消订阅 %d 张壁纸（%s）', len(items),
+            '同时删除本地文件' if mode == 'with_delete' else '仅取消订阅',
+        )
+        return self._send_json({'job_id': job_id})
+
+    def _post_resubscribe(self, body):
+        state = self.server.state
+        with state.lock:
+            scan = state.last_scan
+        if scan is None:
+            return self._send_json({'error': '请先扫描，再重新订阅'}, 409)
+        if body.get('scan_id') != scan['scanned_at']:
+            return self._send_json({'error': '扫描结果已过期，请重新扫描后再重新订阅'}, 409)
+
+        wids = body.get('wids')
+        if not isinstance(wids, list) or not wids:
+            return self._send_json({'error': '未选择任何壁纸'}, 400)
+        if len(wids) > 5000:
+            return self._send_json({'error': '单次选择的壁纸过多'}, 400)
+
+        # 重新订阅的对象只能是磁盘上的残留目录（纯数字 ID），不接受任意 ID
+        allowed = {item['wid']: item for item in scan['orphans']}
+        items, rejected = [], []
+        for wid in wids:
+            key = wid if isinstance(wid, str) else str(wid)
+            if key in allowed:
+                items.append(allowed[key])
+            else:
+                rejected.append(key)
+        if rejected:
+            return self._send_json({
+                'error': '以下目录不在最近一次扫描的待清理列表中，已拒绝整批操作',
+                'rejected': rejected[:50],
+            }, 400)
+
+        job_id, error = state.start_job(
+            'resubscribe', lambda job: _resubscribe_worker(state, job, scan, items)
+        )
+        if not job_id:
+            return self._send_json({'error': error}, 409)
+        core.logger.info('面板请求重新订阅 %d 张壁纸', len(items))
+        return self._send_json({'job_id': job_id})
 
     # ---------- 按 ID 查最近一次扫描结果（缩略图与打开目录共用） ----------
 

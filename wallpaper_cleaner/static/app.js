@@ -10,7 +10,11 @@ const state = {
   scan: null,
   logFile: null,
   recycleSupported: true,
-  selected: new Set(),
+  selected: new Set(),            // 待清理列表的勾选（要删的）
+  subSelected: new Set(),         // 已订阅列表的勾选（要取消订阅的）
+  sessionUnsubscribed: new Set(), // 本会话已取消订阅，等待 Steam 同步
+  sessionResubscribed: new Set(), // 本会话已重新订阅，等待 Steam 同步
+  steam: null,
   subscribedOpen: false,
   subFilter: '',
   sortOrphans: 'default',
@@ -19,6 +23,8 @@ const state = {
   jobTimer: null,
   logTimer: null,
   overlayTimer: null,
+  steamTimer: null,
+  manualWid: '',
 };
 
 const $ = (id) => document.getElementById(id);
@@ -93,6 +99,114 @@ function renderConfigLine() {
   el.textContent = count === null
     ? '已找到 Wallpaper Engine'
     : `已找到 Wallpaper Engine · ${count} 张壁纸已订阅`;
+}
+
+/* ---------------- Steam 状态 ---------------- */
+
+// 取消订阅与重新订阅需要 Steam 在线。这里不做"连不上就把按钮置灰"的处理：
+// 徽标始终可点，点开就是原因与下一步；真去操作时若不可用，会弹出引导弹窗而不是
+// 甩一句错误——"功能看起来用不了"本身就是这个功能最需要避免的事。
+const STEAM_LABEL = {
+  unknown: 'Steam 未检测 · 检测',
+  probing: '正在检测 Steam…',
+  ok: 'Steam 可用',
+  unavailable: 'Steam 不可用 · 查看原因',
+};
+
+function renderSteamBadge() {
+  const el = $('steam-badge');
+  const steam = state.steam || { status: 'unknown' };
+  const status = STEAM_LABEL[steam.status] ? steam.status : 'unknown';
+  el.className = `steam-badge ${status}`;
+  if (status === 'ok') {
+    const count = steam.subscribed_count === null || steam.subscribed_count === undefined
+      ? '—' : steam.subscribed_count;
+    el.textContent = `Steam 可用 · ${count} 个订阅`;
+    el.title = '取消订阅与重新订阅已就绪（数字来自你的 Steam 账号）';
+  } else {
+    el.textContent = STEAM_LABEL[status];
+    el.title = steam.hint || '取消订阅 / 重新订阅需要 Steam 在运行，点这里检测';
+  }
+  el.disabled = status === 'probing';
+}
+
+function steamReady() {
+  return !!(state.steam && state.steam.status === 'ok');
+}
+
+async function probeSteam() {
+  clearTimeout(state.steamTimer);
+  state.steam = Object.assign({}, state.steam, { status: 'probing', hint: '', detail: '' });
+  renderSteamBadge();
+  try {
+    await api('/api/steam/probe', { body: {} });
+  } catch (e) {
+    // 409 表示已在检测中，接着轮询就是了；其它错误由轮询把真实状态刷出来
+  }
+  pollSteamStatus();
+}
+
+function pollSteamStatus() {
+  clearTimeout(state.steamTimer);
+  let tries = 0;
+  const tick = async () => {
+    tries += 1;
+    let steam = null;
+    try {
+      const data = await api('/api/state');
+      steam = data.steam;
+    } catch (e) {
+      return;
+    }
+    if (!steam) return;
+    state.steam = steam;
+    renderSteamBadge();
+    if (steam.status === 'probing' && tries < 40) {
+      state.steamTimer = setTimeout(tick, 500);
+      return;
+    }
+    // 引导弹窗开着的时候检测成功，就把它收掉——用户已经不需要看原因了
+    if (steam.status === 'ok' && !$('steam-overlay').classList.contains('hidden')) {
+      closeSteamGuide();
+      toast('Steam 已连上，可以继续操作了', 'ok');
+    }
+  };
+  state.steamTimer = setTimeout(tick, 400);
+}
+
+/* ---------------- 连接 Steam 引导 ---------------- */
+
+function openSteamGuide(message, wid) {
+  const steam = state.steam || {};
+  $('steam-reason').textContent = message || steam.hint || 'Steam 当前不可用';
+  const detail = $('steam-detail');
+  if (steam.detail && !message) {
+    detail.textContent = `诊断信息：${steam.detail}`;
+    detail.classList.remove('hidden');
+  } else {
+    detail.textContent = '';
+    detail.classList.add('hidden');
+  }
+  // 只有知道要给哪张壁纸跳转时才提供「手动操作」入口，否则那个按钮点了没反应
+  state.manualWid = wid || '';
+  $('btn-steam-manual').classList.toggle('hidden', !state.manualWid);
+  $('steam-overlay').classList.remove('hidden');
+}
+
+function closeSteamGuide() {
+  $('steam-overlay').classList.add('hidden');
+}
+
+function requireSteam(wid) {
+  if (steamReady()) return true;
+  openSteamGuide('', wid);
+  return false;
+}
+
+function handleSteamFailure(message) {
+  openSteamGuide(message);
+  toast(message || 'Steam 操作失败', 'error');
+  probeSteam();
 }
 
 /* ---------------- 提示条 ---------------- */
@@ -288,16 +402,21 @@ function renderOrphans() {
 
   body.innerHTML = items.map((item) => {
     const checked = state.selected.has(item.wid);
+    const revived = state.sessionResubscribed.has(item.wid);
     const kindLabel = item.kind === 'orphan' ? '已取消订阅' : '无法确定的文件夹';
     // 标题来自残留目录自己的 project.json，取不到就显示占位符
     const title = item.title || '';
     const type = item.wp_type ? ` <span class="wp-type">· ${esc(item.wp_type)}</span>` : '';
-    return `<tr class="${checked ? 'selected' : ''}">
-      <td class="col-check"><input type="checkbox" data-wid="${esc(item.wid)}"${checked ? ' checked' : ''}></td>
+    const kindCell = revived
+      ? '<span class="badge resubscribed" title="已提交给 Steam，正在等它把订阅同步回来">已重新订阅</span>'
+      : `<span class="badge ${item.kind}">${kindLabel}</span>`;
+    // 刚重新订阅的目录不再允许勾选删除：本地订阅记录还没刷新，删了会被 Steam 重下
+    return `<tr class="${checked ? 'selected' : ''}${revived ? ' pending' : ''}">
+      <td class="col-check"><input type="checkbox" data-wid="${esc(item.wid)}"${checked ? ' checked' : ''}${revived ? ' disabled' : ''}></td>
       ${thumbCell(item)}
       <td class="wid">${esc(item.wid)}</td>
       <td class="title-cell" title="${esc(title)}">${titleLink(item, title || '—')}${type}</td>
-      <td class="col-kind"><span class="badge ${item.kind}">${kindLabel}</span></td>
+      <td class="col-kind">${kindCell}</td>
       <td class="col-size">${fmtSize(item.size_bytes)}</td>
     </tr>`;
   }).join('');
@@ -308,17 +427,26 @@ function renderOrphans() {
       if (box.checked) state.selected.add(wid); else state.selected.delete(wid);
       box.closest('tr').classList.toggle('selected', box.checked);
       updateDeleteButton();
+      updateResubscribeButton();
       syncSelectAll();
     });
   });
 
   syncSelectAll();
   updateDeleteButton();
+  updateResubscribeButton();
+}
+
+// 可以被清理/重新订阅的残留项：重新订阅过的不在其中
+function selectableOrphans() {
+  const scan = state.scan;
+  if (!scan) return [];
+  return scan.orphans.filter((item) => !state.sessionResubscribed.has(item.wid));
 }
 
 function syncSelectAll() {
   const selectAll = $('check-all');
-  const orphans = state.scan ? state.scan.orphans : [];
+  const orphans = selectableOrphans();
   if (!orphans.length) { selectAll.checked = false; selectAll.indeterminate = false; return; }
   const picked = orphans.filter((o) => state.selected.has(o.wid)).length;
   selectAll.checked = picked === orphans.length;
@@ -327,7 +455,7 @@ function syncSelectAll() {
 
 function selectAllOrphans() {
   state.selected.clear();
-  if (state.scan) state.scan.orphans.forEach((item) => state.selected.add(item.wid));
+  selectableOrphans().forEach((item) => state.selected.add(item.wid));
   renderOrphans();
 }
 
@@ -341,19 +469,38 @@ function updateDeleteButton() {
     : '清理选中';
 }
 
+function updateResubscribeButton() {
+  // 只有纯数字 ID 的残留能重新订阅：无法确定的文件夹没有可用的 workshop ID
+  const orphans = new Set(selectableOrphans().map((i) => i.wid));
+  const chosen = cleanupItems().filter((i) => state.selected.has(i.wid) && orphans.has(i.wid));
+  const btn = $('btn-resubscribe');
+  btn.disabled = state.busy || chosen.length === 0;
+  btn.textContent = chosen.length
+    ? `重新订阅选中 ${chosen.length} 项`
+    : '重新订阅选中';
+}
+
 /* ---------------- 已订阅列表 ---------------- */
+
+function subscribedItems() {
+  return state.scan ? state.scan.subscribed : [];
+}
 
 function renderSubscribed() {
   const scan = state.scan;
   const body = $('sub-body');
   const wrap = $('sub-wrap');
   const empty = $('sub-empty');
+  const selectAll = $('check-all-sub');
 
   if (!scan) {
     $('sub-count').textContent = '0';
     wrap.classList.add('hidden');
     empty.classList.remove('hidden');
     empty.textContent = '尚未扫描。';
+    selectAll.checked = false;
+    selectAll.disabled = true;
+    updateUnsubscribeButton();
     return;
   }
 
@@ -371,18 +518,63 @@ function renderSubscribed() {
     wrap.classList.add('hidden');
     empty.classList.remove('hidden');
     empty.textContent = filter ? '没有匹配的壁纸。' : '没有已订阅的壁纸。';
+    selectAll.checked = false;
+    selectAll.disabled = true;
+    updateUnsubscribeButton();
     return;
   }
 
   wrap.classList.remove('hidden');
   empty.classList.add('hidden');
-  body.innerHTML = items.map((item) => `<tr>
-    ${thumbCell(item)}
-    <td class="wid">${esc(item.wid)}</td>
-    <td class="title-cell" title="${esc(item.title)}">${titleLink(item, item.title)}</td>
-    <td class="col-size">${esc(item.declared_size)}</td>
-    <td class="col-size">${fmtSize(item.size_bytes)}</td>
-  </tr>`).join('');
+  selectAll.disabled = state.busy;
+
+  body.innerHTML = items.map((item) => {
+    const checked = state.subSelected.has(item.wid);
+    // 本会话刚取消订阅的：Steam 那边已经改了，本地记录还没跟上，先标出来
+    const pending = state.sessionUnsubscribed.has(item.wid);
+    const mark = pending
+      ? '<br><span class="badge orphan" title="Steam 正在后台处理，重新扫描后会从这张表里消失">已取消订阅</span>'
+      : '';
+    return `<tr class="${checked ? 'selected' : ''}${pending ? ' pending' : ''}">
+      <td class="col-check"><input type="checkbox" data-wid="${esc(item.wid)}"${checked ? ' checked' : ''}></td>
+      ${thumbCell(item)}
+      <td class="wid">${esc(item.wid)}${mark}</td>
+      <td class="title-cell" title="${esc(item.title)}">${titleLink(item, item.title)}</td>
+      <td class="col-size">${esc(item.declared_size)}</td>
+      <td class="col-size">${fmtSize(item.size_bytes)}</td>
+    </tr>`;
+  }).join('');
+
+  body.querySelectorAll('input[type="checkbox"]').forEach((box) => {
+    box.addEventListener('change', () => {
+      const wid = box.dataset.wid;
+      if (box.checked) state.subSelected.add(wid); else state.subSelected.delete(wid);
+      box.closest('tr').classList.toggle('selected', box.checked);
+      updateUnsubscribeButton();
+      syncSelectAllSub();
+    });
+  });
+
+  syncSelectAllSub();
+  updateUnsubscribeButton();
+}
+
+function syncSelectAllSub() {
+  const selectAll = $('check-all-sub');
+  const items = subscribedItems();
+  if (!items.length) { selectAll.checked = false; selectAll.indeterminate = false; return; }
+  const picked = items.filter((i) => state.subSelected.has(i.wid)).length;
+  selectAll.checked = picked === items.length;
+  selectAll.indeterminate = picked > 0 && picked < items.length;
+}
+
+function updateUnsubscribeButton() {
+  const chosen = subscribedItems().filter((i) => state.subSelected.has(i.wid));
+  const btn = $('btn-unsubscribe');
+  btn.disabled = state.busy || chosen.length === 0;
+  btn.textContent = chosen.length
+    ? `取消订阅选中 ${chosen.length} 项`
+    : '取消订阅选中';
 }
 
 /* ---------------- 关于 ---------------- */
@@ -400,6 +592,7 @@ function renderAbout() {
 }
 
 function renderAll() {
+  renderSteamBadge();
   renderConfigLine();
   renderNotice();
   renderStats();
@@ -416,6 +609,9 @@ async function loadState() {
   state.scan = data.scan;
   state.logFile = data.log_file;
   state.recycleSupported = data.recycle_supported;
+  if (data.steam) state.steam = data.steam;
+  state.sessionUnsubscribed = new Set(data.session_unsubscribed || []);
+  state.sessionResubscribed = new Set(data.session_resubscribed || []);
   if (data.version) window.__PANEL_VERSION__ = data.version;
 
   // 丢弃已经不在列表里的选中项
@@ -423,6 +619,12 @@ async function loadState() {
   Array.from(state.selected).forEach((wid) => {
     if (!valid.has(wid)) state.selected.delete(wid);
   });
+  const validSub = new Set(subscribedItems().map((i) => i.wid));
+  Array.from(state.subSelected).forEach((wid) => {
+    if (!validSub.has(wid)) state.subSelected.delete(wid);
+  });
+  // 刚重新订阅的目录不再允许删除
+  state.sessionResubscribed.forEach((wid) => state.selected.delete(wid));
 
   renderAll();
   fillSettings();
@@ -435,8 +637,12 @@ function setBusy(busy) {
   state.busy = busy;
   $('btn-scan').disabled = busy;
   updateDeleteButton();
+  updateResubscribeButton();
+  updateUnsubscribeButton();
   const selectAll = $('check-all');
-  selectAll.disabled = busy || !(state.scan && state.scan.orphans.length);
+  selectAll.disabled = busy || !selectableOrphans().length;
+  const selectAllSub = $('check-all-sub');
+  selectAllSub.disabled = busy || !subscribedItems().length;
 }
 
 function openProgressOverlay(title) {
@@ -481,7 +687,7 @@ function stopPolling() {
   state.jobTimer = null;
 }
 
-function pollJob(jobId, onDone, onSettled) {
+function pollJob(jobId, onDone, onSettled, onError) {
   stopPolling();
   state.jobTimer = setInterval(async () => {
     let job;
@@ -505,7 +711,9 @@ function pollJob(jobId, onDone, onSettled) {
 
     if (job.status === 'error') {
       setBusy(false);
-      toast(job.error || '任务执行失败', 'error');
+      const message = job.error || '任务执行失败';
+      // 交给调用方决定怎么呈现：Steam 相关的失败要弹引导弹窗，而不是一句 toast
+      if (onError) onError(message); else toast(message, 'error');
       loadState().catch(() => {});
       return;
     }
@@ -659,15 +867,18 @@ async function doDelete() {
     const skipped = (result.skipped || []).length;
     const skippedSub = (result.skipped_subscribed || []).length;
     const skippedFresh = (result.skipped_fresh || []).length;
+    const skippedResub = (result.skipped_resubscribed || []).length;
     state.selected.clear();
     await loadState();
 
     let message = `已清理 ${deleted} 项，释放 ${fmtSize(result.freed_bytes || 0)}`;
     if (skipped) {
-      // 分开说清是被订阅状态拦下的，还是目录刚改动过（后者稍后重试即可）
+      // 分开说清是被订阅状态拦下的、还是目录刚改动过（后者稍后重试即可）、
+      // 还是刚重新订阅过（本地记录还没刷新，由面板自己拦住）
       const parts = [];
       if (skippedSub) parts.push(`${skippedSub} 个仍在订阅`);
       if (skippedFresh) parts.push(`${skippedFresh} 个目录刚改动过，稍后可重试`);
+      if (skippedResub) parts.push(`${skippedResub} 个刚重新订阅`);
       message += parts.length ? `，跳过 ${skipped} 个（${parts.join('；')}）` : `，跳过 ${skipped} 个`;
     }
     if (failed) message += `，失败 ${failed} 个`;
@@ -676,6 +887,182 @@ async function doDelete() {
     // 清理后重扫一遍，保持面板与实际磁盘一致
     startScan({ silent: true, auto: true });
   });
+}
+
+/* ---------------- 取消订阅 ---------------- */
+
+function openUnsubConfirm() {
+  const chosen = subscribedItems().filter((i) => state.subSelected.has(i.wid));
+  if (!chosen.length) return;
+
+  const bytes = chosen.reduce((sum, i) => sum + (Number(i.size_bytes) || 0), 0);
+  $('unsub-count').textContent = String(chosen.length);
+  $('unsub-size').textContent = fmtSize(bytes);
+
+  const shown = chosen.slice(0, 40);
+  const rows = shown.map((i) => {
+    const name = i.title ? ` · ${esc(i.title)}` : '';
+    return `<li><span>${esc(i.wid)}${name}</span><span>${fmtSize(i.size_bytes)}</span></li>`;
+  });
+  if (chosen.length > shown.length) {
+    rows.push(`<li class="more">…… 另有 ${chosen.length - shown.length} 张壁纸</li>`);
+  }
+  $('unsub-list').innerHTML = rows.join('');
+
+  // 每次都回到最保守的默认：仅取消订阅、删除走回收站
+  $('mode-only').checked = true;
+  $('opt-unsub-recycle').checked = true;
+  syncUnsubMode();
+  $('unsub-overlay').classList.remove('hidden');
+}
+
+function closeUnsubConfirm() {
+  $('unsub-overlay').classList.add('hidden');
+}
+
+function syncUnsubMode() {
+  const withDelete = $('mode-delete').checked;
+  $('unsub-delete-options').classList.toggle('hidden', !withDelete);
+  const recycleOn = state.recycleSupported && $('opt-unsub-recycle').checked;
+  $('unsub-recycle-row').classList.toggle('hidden', !state.recycleSupported);
+  // 只有"要删且不走回收站"才需要警告
+  $('unsub-permanent-warning').classList.toggle('hidden', !withDelete || recycleOn);
+}
+
+async function doUnsubscribe() {
+  const chosen = subscribedItems().filter((i) => state.subSelected.has(i.wid));
+  if (!chosen.length) return;
+
+  const mode = $('mode-delete').checked ? 'with_delete' : 'only';
+  const recycle = state.recycleSupported && $('opt-unsub-recycle').checked;
+  closeUnsubConfirm();
+  if (state.busy) return;
+
+  // 连不上 Steam 时不报错，先把"为什么 + 怎么办"讲清楚
+  if (!requireSteam(chosen.length === 1 ? chosen[0].wid : '')) return;
+
+  setBusy(true);
+  state.overlayTimer = setTimeout(
+    () => openProgressOverlay(mode === 'with_delete' ? '正在取消订阅并清理文件' : '正在取消订阅'),
+    OVERLAY_DELAY);
+
+  let jobId;
+  try {
+    const data = await api('/api/unsubscribe', {
+      body: {
+        wids: chosen.map((i) => i.wid),
+        scan_id: state.scan.scanned_at,
+        mode,
+        recycle,
+      },
+    });
+    jobId = data.job_id;
+  } catch (e) {
+    clearOverlayTimer();
+    closeProgressOverlay();
+    setBusy(false);
+    toast(e.message, 'error');
+    return;
+  }
+
+  pollJob(jobId, async (job) => {
+    const result = job.result || {};
+    const done = (result.unsubscribed || []).length;
+    const unconfirmed = (result.unconfirmed || []).length;
+    const failed = (result.failed || []).length;
+    const skipped = (result.skipped || []).length;
+    const deleted = (result.deleted || []).length;
+    const deleteFailed = (result.delete_failed || []).length;
+    state.subSelected.clear();
+    await loadState();
+
+    let message = done ? `已取消订阅 ${done} 张` : '没有壁纸被取消订阅';
+    if (mode === 'with_delete' && done) {
+      if (deleted) message += `，释放 ${fmtSize(result.freed_bytes || 0)}`;
+      if (result.already_gone) message += `，另有 ${result.already_gone} 张已由 Steam 删除`;
+      if (deleteFailed) message += `，${deleteFailed} 个目录没删掉（可重新扫描后再清理）`;
+    }
+    if (unconfirmed) message += `，${unconfirmed} 张已提交但未确认生效`;
+    if (skipped) message += `，跳过 ${skipped} 张（Steam 里已经不在订阅列表）`;
+    if (failed) message += `，失败 ${failed} 张`;
+    // 不自动重扫：Steam 改订阅与本地记录刷新之间有时间差，立刻重扫会把刚取消的
+    // 壁纸又显示成"已订阅"，看起来像失败了
+    toast(message, failed || deleteFailed ? 'error' : 'ok');
+  }, null, handleSteamFailure);
+}
+
+/* ---------------- 重新订阅 ---------------- */
+
+function resubTargets() {
+  const orphans = new Set(selectableOrphans().map((i) => i.wid));
+  return cleanupItems().filter((i) => state.selected.has(i.wid) && orphans.has(i.wid));
+}
+
+function openResubConfirm() {
+  const targets = resubTargets();
+  if (!targets.length) {
+    if (cleanupItems().some((i) => state.selected.has(i.wid))) {
+      toast('选中的都是「无法确定的文件夹」，它们没有可用的 workshop ID，无法重新订阅', 'error');
+    }
+    return;
+  }
+
+  $('resub-count').textContent = String(targets.length);
+  const shown = targets.slice(0, 40);
+  const rows = shown.map((i) => {
+    const name = i.title ? ` · ${esc(i.title)}` : '';
+    return `<li><span>${esc(i.wid)}${name}</span><span>${fmtSize(i.size_bytes)}</span></li>`;
+  });
+  if (targets.length > shown.length) {
+    rows.push(`<li class="more">…… 另有 ${targets.length - shown.length} 张壁纸</li>`);
+  }
+  $('resub-list').innerHTML = rows.join('');
+  $('resub-overlay').classList.remove('hidden');
+}
+
+function closeResubConfirm() {
+  $('resub-overlay').classList.add('hidden');
+}
+
+async function doResubscribe() {
+  const targets = resubTargets();
+  closeResubConfirm();
+  if (!targets.length || state.busy) return;
+  if (!requireSteam(targets.length === 1 ? targets[0].wid : '')) return;
+
+  setBusy(true);
+  state.overlayTimer = setTimeout(() => openProgressOverlay('正在重新订阅'), OVERLAY_DELAY);
+
+  let jobId;
+  try {
+    const data = await api('/api/resubscribe', {
+      body: { wids: targets.map((i) => i.wid), scan_id: state.scan.scanned_at },
+    });
+    jobId = data.job_id;
+  } catch (e) {
+    clearOverlayTimer();
+    closeProgressOverlay();
+    setBusy(false);
+    toast(e.message, 'error');
+    return;
+  }
+
+  pollJob(jobId, async (job) => {
+    const result = job.result || {};
+    const done = (result.resubscribed || []).length;
+    const unconfirmed = (result.unconfirmed || []).length;
+    const failed = (result.failed || []).length;
+    const skipped = (result.skipped || []).length;
+    const chosen = targets.length;
+    await loadState();
+
+    let message = done ? `已重新订阅 ${done} 张，Steam 正在后台下载` : '没有壁纸被重新订阅';
+    if (unconfirmed) message += `，${unconfirmed} 张已提交但未确认生效`;
+    if (skipped) message += `，跳过 ${skipped} 张（已经在订阅列表中）`;
+    if (failed) message += `，失败 ${failed} 张`;
+    if (done && done < chosen) message += `　（成功后已从勾选中移除，可重新扫描核实）`;
+    toast(message, failed ? 'error' : 'ok');
+  }, null, handleSteamFailure);
 }
 
 /* ---------------- 抽屉 ---------------- */
@@ -754,12 +1141,59 @@ function bind() {
   });
 
   $('check-all').addEventListener('change', (e) => {
-    const orphans = state.scan ? state.scan.orphans : [];
-    orphans.forEach((item) => {
+    selectableOrphans().forEach((item) => {
       if (e.target.checked) state.selected.add(item.wid);
       else state.selected.delete(item.wid);
     });
     renderOrphans();
+  });
+
+  // 已订阅列表的勾选独立于待清理列表：一个是要退的，一个是要删的
+  $('check-all-sub').addEventListener('change', (e) => {
+    subscribedItems().forEach((item) => {
+      if (e.target.checked) state.subSelected.add(item.wid);
+      else state.subSelected.delete(item.wid);
+    });
+    renderSubscribed();
+  });
+
+  $('btn-unsubscribe').addEventListener('click', openUnsubConfirm);
+  $('btn-cancel-unsub').addEventListener('click', closeUnsubConfirm);
+  $('btn-confirm-unsub').addEventListener('click', doUnsubscribe);
+  $('mode-only').addEventListener('change', syncUnsubMode);
+  $('mode-delete').addEventListener('change', syncUnsubMode);
+  $('opt-unsub-recycle').addEventListener('change', syncUnsubMode);
+
+  $('btn-resubscribe').addEventListener('click', openResubConfirm);
+  $('btn-cancel-resub').addEventListener('click', closeResubConfirm);
+  $('btn-confirm-resub').addEventListener('click', doResubscribe);
+
+  // Steam 徽标与引导弹窗
+  $('steam-badge').addEventListener('click', () => {
+    if (state.steam && state.steam.status === 'unavailable') openSteamGuide();
+    else probeSteam();
+  });
+  $('btn-steam-retry').addEventListener('click', () => {
+    $('steam-reason').textContent = '正在检测…';
+    $('steam-detail').classList.add('hidden');
+    probeSteam();
+  });
+  $('btn-steam-launch').addEventListener('click', async () => {
+    try {
+      await api('/api/steam/launch', { body: {} });
+      toast('已请求启动 Steam，登录后点「重新检测」', 'ok');
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  });
+  $('btn-steam-manual').addEventListener('click', async () => {
+    if (!state.manualWid) return;
+    try {
+      await api('/api/steam/page', { body: { wid: state.manualWid } });
+      toast('已在 Steam 中打开这张壁纸的页面，可在那里手动取消订阅', 'ok');
+    } catch (e) {
+      toast(e.message, 'error');
+    }
   });
 
   $('toggle-subscribed').addEventListener('click', () => {
@@ -863,11 +1297,22 @@ function bind() {
     if (e.key !== 'Escape') return;
     closeLightbox();
     closeConfirm();
+    closeUnsubConfirm();
+    closeResubConfirm();
+    closeSteamGuide();
     closeDrawer('advanced-drawer');
   });
 
-  $('confirm-overlay').addEventListener('click', (e) => {
-    if (e.target === e.currentTarget) closeConfirm();
+  // 点遮罩空白处关闭（进度弹窗按设计不可关：任务还在跑）
+  [
+    ['confirm-overlay', closeConfirm],
+    ['unsub-overlay', closeUnsubConfirm],
+    ['resub-overlay', closeResubConfirm],
+    ['steam-overlay', closeSteamGuide],
+  ].forEach(([id, close]) => {
+    $(id).addEventListener('click', (e) => {
+      if (e.target === e.currentTarget) close();
+    });
   });
 }
 
@@ -891,6 +1336,10 @@ async function bootstrap() {
 
   // 打开面板就自动检查一遍，普通用户不必自己去找「重新扫描」
   if (!state.paths || state.paths.source === 'none') return;
+
+  // 顺便探一次 Steam（后台执行，不挡扫描）：徽标先告诉用户这个功能现在能不能用
+  probeSteam();
+
   if (state.scan && scanAgeMs(state.scan) < SCAN_REUSE_MS) {
     // 刚扫过（刷新页面、开第二个窗口）就直接复用，选中状态只存在页面内存里，这里补上
     selectAllOrphans();

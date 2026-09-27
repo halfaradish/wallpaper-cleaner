@@ -221,6 +221,13 @@ main {
   font-variant-numeric: tabular-nums;
 }
 
+/* 同样的道理：文案随选中数量变化，留够「重新订阅选中 999 项」的宽度避免整组漂移 */
+#btn-resubscribe {
+  min-width: 148px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
 .count {
   font-family: var(--mono);
   font-size: 12px;
@@ -275,6 +282,30 @@ input[type="checkbox"]:checked::after {
   border: solid #0d1014;
   border-width: 0 2px 2px 0;
   transform: rotate(42deg);
+}
+
+/* 单选与复选框同一套观感（取消订阅的两种方式用单选） */
+input[type="radio"] {
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  flex: none;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  background: var(--surface-2);
+  cursor: pointer;
+  position: relative;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+input[type="radio"]:checked { border-color: var(--accent); }
+
+input[type="radio"]:checked::after {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--accent);
 }
 
 /* ---------- 表格 ---------- */
@@ -424,31 +455,71 @@ img.thumb { cursor: zoom-in; }
 
 .badge.orphan { color: var(--warn); border-color: rgba(217, 164, 65, 0.4); background: rgba(217, 164, 65, 0.1); }
 .badge.unknown { color: #c78ede; border-color: rgba(199, 142, 222, 0.4); background: rgba(199, 142, 222, 0.1); }
+.badge.resubscribed { color: var(--good); border-color: rgba(79, 180, 119, 0.4); background: rgba(79, 180, 119, 0.1); }
+
+/* 等待 Steam 同步的行：状态已经不是磁盘上看起来的那样了，压暗一点提示"还没落定" */
+tbody tr.pending { opacity: 0.72; }
 
 .empty { padding: 28px 18px; text-align: center; color: var(--muted); font-size: 13px; }
 
+/* ---------- Steam 状态徽标 ---------- */
+
+/* 功能可用性常驻显示：不用 disabled 把功能藏起来，而是始终能看到"现在能不能用、
+   为什么不能用"。四种状态分别对应 steamapi 的 unknown / probing / ok / unavailable。 */
+.steam-badge {
+  appearance: none;
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 20px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.12s, color 0.12s, background 0.12s;
+}
+
+.steam-badge:hover:not(:disabled) { background: var(--surface-3); color: var(--text); }
+.steam-badge:disabled { cursor: default; opacity: 0.75; }
+
+.steam-badge.ok {
+  color: var(--good);
+  border-color: rgba(79, 180, 119, 0.45);
+  background: rgba(79, 180, 119, 0.1);
+}
+
+.steam-badge.unavailable {
+  color: var(--warn);
+  border-color: rgba(217, 164, 65, 0.45);
+  background: rgba(217, 164, 65, 0.1);
+}
+
+.steam-badge.probing { animation: pulse 1.4s ease-in-out infinite; }
+
 /* ---------- 折叠区 ---------- */
 
-.collapse {
+/* 折叠标题不再是整行按钮：卡片头里还要放「全选 / 取消订阅选中」，按钮不能嵌套按钮 */
+.collapse-title {
   appearance: none;
-  width: 100%;
   background: transparent;
   border: 0;
   font: inherit;
   font-size: 14px;
   font-weight: 600;
   color: var(--text);
-  padding: 14px 18px;
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 10px;
+  padding: 4px 8px;
+  margin: -4px -8px;
+  border-radius: 6px;
   cursor: pointer;
-  text-align: left;
 }
 
-.collapse:hover { background: var(--surface-2); }
-.collapse .chev { color: var(--muted); transition: transform 0.15s; }
-.collapse[aria-expanded="true"] .chev { transform: rotate(90deg); }
+.collapse-title:hover { background: var(--surface-2); }
+.collapse-title .chev { color: var(--muted); transition: transform 0.15s; }
+.collapse-title[aria-expanded="true"] .chev { transform: rotate(90deg); }
 
 .search {
   display: block;
@@ -657,6 +728,38 @@ img.thumb { cursor: zoom-in; }
   border-radius: 6px;
   width: 100%;
 }
+
+/* 取消订阅的两种方式：整行可点的大单选，说明压在标题下面一行 */
+.chk.mode {
+  align-items: flex-start;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  width: 100%;
+  line-height: 1.5;
+}
+
+.chk.mode + .chk.mode { margin-top: 8px; }
+.chk.mode input { margin-top: 3px; }
+.chk.mode:has(input:checked) { border-color: var(--accent-dim); background: rgba(106, 169, 224, 0.08); }
+
+.mode-note { display: block; font-size: 11.5px; color: var(--muted); }
+
+#unsub-delete-options { margin-top: 10px; }
+
+/* 引导弹窗里的步骤列表 */
+.guide-steps {
+  margin: 12px 0 0;
+  padding-left: 20px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.guide-steps li { margin: 4px 0; }
+
+#steam-reason-box { margin-top: 12px; }
+#steam-detail { margin-top: 8px; }
 
 .warn-text { margin: 10px 0 0; font-size: 12.5px; color: #f0a9a2; }
 
