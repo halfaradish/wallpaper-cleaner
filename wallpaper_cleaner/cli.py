@@ -95,7 +95,7 @@ def _hold_back(targets, workshop_dir, json_path):
 
     CLI 没有确认环节，一旦判断失误就是永久删除，所以这里做两道检查：
     1) 重新读订阅缓存和 Steam 订阅记录，仍处于订阅状态的一律不删；
-    2) 目录刚被改动过的（可能还在下载）先放过一轮——除非 Steam 记录可信且写明内容已装完。
+    2) 目录里的内容刚被改动过的（可能还在下载）先放过一轮——除非 Steam 记录可信且写明内容已装完。
     """
     try:
         context = core.load_subscription_context(json_path, workshop_dir)
@@ -113,7 +113,7 @@ def _hold_back(targets, workshop_dir, json_path):
         if wid in protected:
             held.append((label, '仍处于订阅状态'))
         elif wid not in complete and core.is_freshly_downloaded(item.get('path') or ''):
-            held.append((label, f'目录在 {core.FRESH_DOWNLOAD_GRACE_SECONDS // 60} 分钟内被改动过'))
+            held.append((label, f'目录内容在 {core.FRESH_DOWNLOAD_GRACE_SECONDS // 60} 分钟内被改动过'))
         else:
             remaining.append(item)
     return remaining, held

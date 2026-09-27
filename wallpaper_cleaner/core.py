@@ -838,27 +838,58 @@ def find_preview(folder, declared=''):
     return ''
 
 
-# 目录在这么久之内被改动过就不参与删除，兜住"正在下载、两边都还没有记录"的窗口。
+# 目录里的内容在这么久之内被改动过就不参与删除，兜住"正在下载、两边都还没有记录"的窗口。
 # 取 30 分钟是因为 WE 缓存的滞后可能长达几十分钟（实测有 37 分钟才刷新的），
 # 而误跳过只是让残留晚一轮清理，误删则要找回收站。
 # Steam 记录里已写明内容装完的不受此限（见 load_subscription_context 的 complete）。
 FRESH_DOWNLOAD_GRACE_SECONDS = 1800
 
 
-def is_freshly_downloaded(path, grace_seconds=None):
-    """目录是否还在「刚下载」保护期内（按目录自身的修改时间判断）
+def newest_content_mtime(path):
+    """目录里内容最近一次变动的时间（秒）；目录为空时退回目录自身的时间，读不到返回 None
 
-    Steam 下载时会不断往目录里写文件，所以正在下载的目录修改时间很新。
-    这只是兜底判断，主判据是 Steam 写好的安装记录；stat 失败返回 False，
+    只看一层条目就够：Steam 下载时项目文件、预览图、内容包都写在壁纸目录的顶层，
+    Wallpaper Engine 写的 shader 缓存也是一层子目录（它的 mtime 随缓存写入更新）。
+    """
+    newest = None
+    try:
+        with os.scandir(path) as entries:
+            for entry in entries:
+                try:
+                    stamp = entry.stat(follow_symlinks=False).st_mtime
+                except OSError:
+                    continue
+                if newest is None or stamp > newest:
+                    newest = stamp
+    except OSError:
+        return None
+    if newest is not None:
+        return newest
+    # 空目录没有内容可看，只能看它自己：Steam 刚为一次下载建好目录时就是这种状态
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return None
+
+
+def is_freshly_downloaded(path, grace_seconds=None):
+    """目录是否还在「刚下载」保护期内（按目录里内容的修改时间判断）
+
+    Steam 下载时会不断往目录里写文件，所以正在下载的目录，里面条目的修改时间很新。
+    之所以不直接看目录自身的 mtime：Steam **删除**内容时同样会刷新它，而残留目录的
+    内容时间还停在下载那一刻——只看目录的话，"刚被 Steam 清空的残留"会被误判成
+    "正在下载"，白等一轮保护期。
+
+    这只是兜底判断，主判据是 Steam 写好的安装记录；读不到目录返回 False，
     让删除流程照常去报它自己的错误，而不是无限期保护下去。
     """
     grace = FRESH_DOWNLOAD_GRACE_SECONDS if grace_seconds is None else grace_seconds
     if grace <= 0:
         return False
-    try:
-        return (time.time() - os.path.getmtime(path)) < grace
-    except OSError:
+    stamp = newest_content_mtime(path)
+    if stamp is None:
         return False
+    return (time.time() - stamp) < grace
 
 
 def get_dir_size(path):

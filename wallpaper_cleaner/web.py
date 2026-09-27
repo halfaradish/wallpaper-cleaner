@@ -325,7 +325,7 @@ def _delete_worker(state, job, scan, items, recycle, just_resubscribed=()):
     fresh_wids = {i['wid'] for i in fresh}
     targets = [i for i in rest if i['wid'] not in fresh_wids]
     for item in fresh:
-        emit(0, total, f"跳过 {core.item_label(item)}：目录在 {grace_minutes} 分钟内被改动过，"
+        emit(0, total, f"跳过 {core.item_label(item)}：目录内容在 {grace_minutes} 分钟内被改动过，"
                        '可能是正在下载的壁纸', 'warn')
 
     if not targets:
