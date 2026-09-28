@@ -6,7 +6,7 @@
 
 ## 下载 zip 解压即用（推荐）
 
-到 [Releases](../../releases) 下载 `wallpaper-cleaner-<版本>.zip`，**解压到一个自己的文件夹里**，双击里面的 `wallpaper-cleaner.exe` 即可。不需要安装 Python，也不需要命令行。
+到 [Releases](../../releases) 下载 `wallpaper-cleaner-<版本>.zip`，解压后会得到一个 `wallpaper-cleaner` 文件夹，双击里面的 `wallpaper-cleaner.exe` 即可。不需要安装 Python，也不需要命令行。
 
 > 请先解压再运行，不要直接在压缩包里双击。程序会把配置与日志写在 exe 旁边（见[配置与日志](docs/配置与日志.md)），
 > 直接双击压缩包里的 exe 时，Windows 会先把它解到临时目录再运行，配置就会跟着落在那个随时会被清掉的地方。

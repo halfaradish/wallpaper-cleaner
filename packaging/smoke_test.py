@@ -38,6 +38,7 @@ import zipfile
 STARTUP_TIMEOUT = 120      # 单文件 exe 首次启动要解压，慢一点正常
 POLL_INTERVAL = 1.0
 EXE_NAME = 'wallpaper-cleaner.exe'
+ZIP_ENTRY = 'wallpaper-cleaner/' + EXE_NAME   # 发布 zip 里的唯一条目
 
 
 def _force_utf8_console():
@@ -200,29 +201,30 @@ def stop(process):
 def unpack_artifact(path):
     """把待测产物准备成一个可执行的 exe，返回 (exe 路径, 运行目录)
 
-    给 zip 就解压：顺便断言"解压出来只有一个 exe"——那是发布形态的一部分，
-    多塞了文件用户就会多一份不知道能不能删的东西。
+    给 zip 就解压：顺便断言"zip 里只有 wallpaper-cleaner/ 下那一个 exe"——
+    那是发布形态的一部分，多塞了文件用户就会多一份不知道能不能删的东西。
     给 exe 就直接用。
-    两种情况下都会把 exe 复制到一个干净的临时目录再返回，这样"配置落在 exe 旁边"
-    就落在那个临时目录里，不会污染 dist/ 或仓库。
+    返回的运行目录是 exe 所在的文件夹（zip 情况下是解压出的 wallpaper-cleaner/
+    子目录，不是临时目录根），这样"配置落在 exe 旁边"就落在临时目录里，
+    不会污染 dist/ 或仓库。
     """
     work = tempfile.mkdtemp(prefix='wc-smoke-')
     if path.lower().endswith('.zip'):
         with zipfile.ZipFile(path) as zf:
             names = zf.namelist()
-            if names != [EXE_NAME]:
+            if names != [ZIP_ENTRY]:
                 raise SystemExit(
-                    f'[smoke] 失败：zip 里应当只有 {EXE_NAME} 一个文件，实际是 {names}'
+                    f'[smoke] 失败：zip 里应当只有 {ZIP_ENTRY} 一个条目，实际是 {names}'
                 )
             zf.extractall(work)
         print(f'[smoke] 已解压 {os.path.basename(path)}', flush=True)
+        exe = os.path.join(work, *ZIP_ENTRY.split('/'))
     else:
-        shutil.copy2(path, os.path.join(work, os.path.basename(path)))
-    exe = os.path.join(work, EXE_NAME if os.path.exists(os.path.join(work, EXE_NAME))
-                       else os.path.basename(path))
+        exe = os.path.join(work, os.path.basename(path))
+        shutil.copy2(path, exe)
     if not os.path.exists(exe):
         raise SystemExit(f'[smoke] 失败：产物里没有找到可执行文件（{work}）')
-    return exe, work
+    return exe, os.path.dirname(exe)
 
 
 def main():

@@ -11,8 +11,8 @@
 
 为什么发布 zip 而不是裸 exe：程序的配置与日志落在 exe 旁边（便携优先），
 所以用户需要一个"文件夹"的概念。浏览器下载一个裸 exe 通常直接落在下载目录，
-在那里生成 config.yml 与 logs/ 会显得很脏；zip 解压天然自带一层文件夹。
-zip 里只有 exe 一个文件，解压出来就是它。
+在那里生成 config.yml 与 logs/ 会显得很脏。zip 里自带一层 wallpaper-cleaner/
+目录，解压出来就是程序自己的家。
 
 参数：
     --skip-deps    跳过虚拟环境准备（依赖已经装好时用，CI 里走这条路）
@@ -35,6 +35,8 @@ SMOKE = os.path.join(PROJECT_ROOT, 'packaging', 'smoke_test.py')
 REQUIREMENTS = os.path.join(PROJECT_ROOT, 'requirements-desktop.txt')
 EXE_NAME = 'wallpaper-cleaner.exe'
 DIST_DIR = os.path.join(PROJECT_ROOT, 'dist')
+# zip 里自带的一层目录：解压出来就是 wallpaper-cleaner/，exe 在里面
+PACKAGE_DIR = 'wallpaper-cleaner'
 
 
 def read_version():
@@ -61,8 +63,10 @@ def make_zip(exe_path, version):
     if os.path.exists(zip_path):
         os.remove(zip_path)
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-        # arcname 只给文件名：解压出来就是裸的一个 exe，不带任何目录层级
-        zf.write(exe_path, arcname=EXE_NAME)
+        # arcname 带一层目录：解压出来是 wallpaper-cleaner/wallpaper-cleaner.exe。
+        # 必须用正斜杠拼（zip 规范用 / 分隔），os.path.join 在 Windows 下会写
+        # 出反斜杠 arcname，部分解压工具会把它当成文件名的一部分。
+        zf.write(exe_path, arcname=f'{PACKAGE_DIR}/{EXE_NAME}')
     return zip_path
 
 
