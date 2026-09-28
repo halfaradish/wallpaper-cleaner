@@ -1,0 +1,454 @@
+/* 外壳布局：导航栏 + 顶栏 + 工具条 + 内容区 + 状态栏
+   ==========================================================================
+   整个面板是一个固定成窗口大小的网格，只有内容区内部滚动。顶栏、工具条与状态栏
+   永远不动——它们在 560px 高的最小窗口里也必须是稳定的参照物。
+
+   用 height: 100% 而不是 100dvh：面板只跑在 WebView2 与桌面浏览器里，
+   没有移动端地址栏收起展开那回事，百分比高度最省事也最不容易出意外。
+   ========================================================================== */
+
+.app {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  height: 100%;
+}
+
+/* ==========================================================================
+   导航栏
+   ========================================================================== */
+
+.rail {
+  display: flex;
+  flex-direction: column;
+  width: 184px;
+  background: var(--rail-bg);
+  border-right: 1px solid var(--border);
+  /* 宽度变化是用户主动触发的状态切换，给它一条过渡；标签的淡出更快一点，
+     否则会在宽度还没收完时先被挤成一列竖字 */
+  transition: width var(--dur-3) var(--ease-out);
+}
+
+.rail[data-state="collapsed"] { width: 56px; }
+
+.rail-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  height: 60px;
+  padding: 0 var(--sp-4);
+  flex: none;
+  border-bottom: 1px solid var(--border-faint);
+  overflow: hidden;
+}
+
+.rail-brand-mark {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-xs);
+  background: linear-gradient(150deg, var(--accent), var(--accent-bg-press));
+  box-shadow: var(--edge-highlight);
+}
+
+/* 品牌名比正文小一档：它是导航栏的抬头，不是标题。放大了会在 184px 里被切掉，
+   而这个位置的名字被切一半比小一点难看得多。 */
+.rail-brand-name {
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-display);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  letter-spacing: var(--track-tight);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.rail-nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-3) var(--sp-2);
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.rail-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  height: 36px;
+  padding: 0 var(--sp-3);
+  flex: none;
+  border: 1px solid transparent;
+  border-radius: var(--r-control);
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--dur-2) var(--ease-out),
+              color var(--dur-2) var(--ease-out);
+}
+
+.rail-item:hover { background: var(--surface-2); color: var(--text); }
+
+/* 选中态：底色抬一档 + 左侧一道强调条。用竖条而不是整块蓝底，
+   是因为蓝底会让导航栏成为全屏最响的东西，而它只是导航。 */
+.rail-item[aria-current="page"] {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.rail-item[aria-current="page"]::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 50%;
+  width: 2px;
+  height: 18px;
+  margin-top: -9px;
+  border-radius: var(--r-full);
+  background: var(--accent);
+  transform: scaleY(1);
+  animation: rail-mark-in var(--dur-3) var(--ease-out);
+}
+
+@keyframes rail-mark-in {
+  from { transform: scaleY(0.2); opacity: 0; }
+  to   { transform: scaleY(1); opacity: 1; }
+}
+
+.rail-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+.rail-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.rail-badge {
+  flex: none;
+  min-width: 1.5em;
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-full);
+  background: var(--surface-3);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  line-height: 1.7;
+  text-align: center;
+}
+
+.rail-item[aria-current="page"] .rail-badge {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* 收起状态：只剩图标。
+   文字用 display: none 而不是 opacity: 0 —— 只把它们变透明的话，它们仍然占着宽度，
+   justify-content: center 会把图标推到左边去（实测图标偏左 8px）。
+   文字是被导航栏变窄的过程"挤出视野"的，配合各容器上的 overflow: hidden，
+   观感与渐隐一样，还少一层透明度过渡。 */
+.rail[data-state="collapsed"] .rail-label,
+.rail[data-state="collapsed"] .rail-brand-name,
+.rail[data-state="collapsed"] .rail-badge,
+.rail[data-state="collapsed"] .rail-version { display: none; }
+
+.rail[data-state="collapsed"] .rail-item { justify-content: center; padding: 0; }
+.rail[data-state="collapsed"] .rail-brand { justify-content: center; padding: 0; }
+
+.rail-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-2);
+  flex: none;
+  overflow: hidden;
+  border-top: 1px solid var(--border-faint);
+}
+
+.rail-version {
+  flex: 1;
+  min-width: 0;
+  padding-left: var(--sp-2);
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+}
+
+.rail[data-state="collapsed"] .rail-foot { justify-content: center; padding-inline: var(--sp-1); }
+
+/* 折叠按钮：图标朝向跟着状态转，转的是同一个符号，不换图标 */
+.rail-collapse svg { transition: transform var(--dur-3) var(--ease-out); }
+.rail[data-state="collapsed"] .rail-collapse svg { transform: rotate(180deg); }
+
+/* ==========================================================================
+   主区
+   ========================================================================== */
+
+.main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* ---------- 顶栏 ---------- */
+/* 不做 sticky、不加 backdrop-filter：内容区是独立滚动容器，不会有东西从下面
+   穿过去，所以那层模糊纯属白花钱（每帧都要重新合成）。 */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  height: 60px;
+  padding: 0 var(--sp-5);
+  flex: none;
+  border-bottom: 1px solid var(--border);
+  background:
+    radial-gradient(120% 180% at 8% 0%, var(--topbar-tint), transparent 70%),
+    var(--bg);
+}
+
+.topbar-heading {
+  flex: 1;
+  min-width: 0;
+}
+
+.topbar-title {
+  font-family: var(--font-display);
+  font-size: var(--fs-xl);
+  font-weight: 600;
+  line-height: var(--lh-tight);
+  letter-spacing: var(--track-tight);
+}
+
+.topbar-sub {
+  margin: 2px 0 0;
+  max-width: 60ch;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.topbar-sub.warn { color: var(--warn-text); }
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: none;
+}
+
+/* ---------- 工具条：左边数字，右边动作 ---------- */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  min-height: 48px;
+  padding: var(--sp-2) var(--sp-5);
+  flex: none;
+  border-bottom: 1px solid var(--border-faint);
+}
+
+.statbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  min-width: 0;
+  flex: 1;
+}
+
+.stat {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+/* 项与项之间的竖线由后一项画：这样第一项前面永远没有多余的分隔符 */
+.stat + .stat {
+  padding-left: var(--sp-4);
+  border-left: 1px solid var(--border-faint);
+}
+
+.stat-label {
+  color: var(--muted);
+  font-size: var(--fs-label);
+  white-space: nowrap;
+}
+
+.stat-value {
+  font-family: var(--font-display);
+  font-size: var(--fs-title);
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+/* 待清理与可释放是这张表存在的理由，让它们比另外两个数字响一档 */
+.stat.primary .stat-value { font-size: var(--fs-num-sm); }
+.stat-value.warn { color: var(--warn); }
+.stat-value.good { color: var(--good); }
+
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: none;
+}
+
+/* ---------- 内容区 ---------- */
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  flex: 1;
+  min-height: 0;
+  padding: var(--sp-4) var(--sp-5) var(--sp-5);
+}
+
+.view {
+  display: none;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.view.is-active { display: flex; }
+
+/* 视图切换的入场：淡入 + 沿行进方向轻微位移。
+   理由不是"好看"，而是让"内容换了"这件事有一次可见的确认；
+   位移方向跟着导航栏里点击的位置走，方向感才对得上。 */
+.view.is-active {
+  animation: view-in var(--dur-4) var(--ease-out);
+}
+
+@keyframes view-in {
+  from { opacity: 0; transform: translateX(var(--view-enter-x, 8px)); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ---------- 状态栏 ----------
+   扫描进度是贴在状态栏上沿的一条 2px 细线，而不是一个盖住内容的浮层。
+   扫描是这个面板最常发生的事（每次打开都会扫一遍），它必须能看见，
+   但不该每次都把整页挡住。 */
+.statusbar {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: var(--fs-label);
+}
+
+.statusbar .bar { height: 2px; border-radius: 0; background: transparent; flex: none; }
+
+.statusbar-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  height: 28px;
+  padding: 0 var(--sp-5);
+}
+
+.statusbar-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.statusbar-right {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  flex: none;
+}
+
+/* 状态栏里的链接式按钮：它长得像文字，但确实是个按钮 */
+.statusbar-link {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  cursor: pointer;
+  border-radius: var(--r-xs);
+  transition: color var(--dur-2) var(--ease-out);
+}
+
+.statusbar-link:hover { color: var(--accent); }
+
+/* ---------- 跳过导航 ----------
+   键盘用户的第一个 Tab 落点。平时缩在屏幕外，拿到焦点才滑进来。 */
+.skip-link {
+  position: fixed;
+  top: var(--sp-2);
+  left: var(--sp-2);
+  z-index: var(--z-skip-link);
+  padding: var(--sp-2) var(--sp-4);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--r-control);
+  background: var(--surface-3);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  text-decoration: none;
+  box-shadow: var(--shadow-2);
+  transform: translateY(calc(-100% - var(--sp-4)));
+  transition: transform var(--dur-3) var(--ease-out);
+}
+
+.skip-link:focus { transform: none; }
+
+/* ==========================================================================
+   窄屏
+   ========================================================================== */
+
+/* 900px 以下强制收起导航栏：780px 的最小窗口里，展开的导航栏会吃掉四分之一的
+   宽度，而表格是这里唯一不能压缩的东西。此时折叠按钮也一并隐藏——
+   留一个按不动的按钮比没有按钮更让人困惑。 */
+@media (max-width: 899px) {
+  .rail { width: 56px; }
+  /* 这一段与上面 .rail[data-state="collapsed"] 那组必须保持一致：这里管的是
+     "窗口太窄，无论用户选了什么都得收起"，那边管的是"用户手动收起"。
+     CSS 没法让一个媒体查询和一个属性选择器共用一组声明，所以只能写两遍。 */
+  .rail .rail-label,
+  .rail .rail-brand-name,
+  .rail .rail-badge,
+  .rail .rail-version { display: none; }
+  .rail .rail-item { justify-content: center; padding: 0; }
+  .rail .rail-brand { justify-content: center; padding: 0; }
+  .rail .rail-foot { justify-content: center; padding-inline: var(--sp-1); }
+  /* 选择器要带上 .rail：.btn 的 display 在 components.css 里，而它排在 layout.css
+     之后，单写 .rail-collapse 会被 .btn { display: inline-flex } 盖掉 */
+  .rail .rail-collapse { display: none; }
+
+  .toolbar { flex-wrap: wrap; row-gap: var(--sp-2); }
+  .statbar { flex-wrap: wrap; row-gap: var(--sp-1); }
+  .toolbar-actions { width: 100%; }
+}
+
+/* 1024px 以下让两个次要数字退场：它们能推断出来（文件夹 ≈ 已订阅 + 待清理），
+   而"待清理"和"可释放空间"不能。 */
+@media (max-width: 1023px) {
+  .stat.secondary { display: none; }
+  .content { padding-inline: var(--sp-4); }
+  .topbar, .toolbar, .statusbar { padding-inline: var(--sp-4); }
+}

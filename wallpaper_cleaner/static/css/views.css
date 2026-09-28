@@ -1,421 +1,118 @@
-/* 视图：页面级排布——顶栏、内容容器、概览、卡片外壳、抽屉骨架、响应式 */
+/* 视图：页面级排布
+   ==========================================================================
+   三个视图（待清理 / 已订阅 / 设置）共用外壳，各自的排布写在这里。
+   视图本身是一个 flex 纵向列，唯一能长高的部分是表格或设置面板——
+   这样"哪块能滚、哪块不能滚"在结构上就是确定的，不靠 max-height 去猜。
+   ========================================================================== */
 
-/* ---------- 顶栏 ---------- */
+/* ==========================================================================
+   待清理 / 已订阅：表格视图
+   ========================================================================== */
 
-.topbar {
-  position: sticky;
-  top: 0;
-  z-index: var(--z-topbar);
+/* 表格上方的说明与筛选行。只有已订阅视图用得到（待清理没有筛选） */
+.view-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding-bottom: var(--sp-3);
+  flex: none;
+}
+
+.view-hint {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  font-size: var(--fs-label);
+}
+
+.view-tools .search-wrap { width: min(280px, 40%); flex: none; }
+
+/* ==========================================================================
+   设置视图
+   ========================================================================== */
+
+.settings {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--sp-4);
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  align-content: start;
+}
+
+.panel {
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
-  padding: var(--sp-4) var(--sp-6);
-  /* 纯色 + 模糊像一块塑料板。叠一层很淡的径向渐变（左上偏亮），
-     再压一条 1px 内高光，就有了"受光的顶面"这层意思。 */
-  background:
-    radial-gradient(120% 140% at 12% 0%, var(--topbar-tint), transparent 60%),
-    var(--bg);
-  border-bottom: 1px solid var(--border);
-  box-shadow: var(--shadow-1), var(--edge-highlight);
+  padding: var(--sp-5);
+  border: 1px solid var(--border);
+  border-radius: var(--r-panel);
+  background: var(--surface);
+  box-shadow: var(--edge-highlight);
 }
 
-.topbar-row {
+.panel-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-6);
+  gap: var(--sp-3);
+}
+
+.panel-title {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-title);
+  font-weight: 600;
+}
+
+.panel-actions {
+  display: flex;
+  gap: var(--sp-2);
   flex-wrap: wrap;
 }
 
-/* 顶栏里的扫描进度条：细一条 + 一行文字。
-   它替掉了原先的全屏进度弹窗——打开面板会自动扫一遍，每次都挡住整页太重。 */
-.taskbar {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-2);
-  animation: taskbar-in var(--dur-base) var(--ease-out);
-}
-
-@keyframes taskbar-in {
-  from { opacity: 0; transform: translateY(-4px); }
-  to { opacity: 1; transform: none; }
-}
-
-.bar-slim { height: 3px; }
-
-.taskbar-foot {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  font-size: var(--fs-label);
-  color: var(--text-dim);
-}
-
-.taskbar-message { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.taskbar-count { flex: none; color: var(--muted); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
-
-.taskbar-detail {
-  appearance: none;
-  flex: none;
-  margin-left: auto;
-  background: transparent;
-  border: 0;
-  padding: 0;
-  font: inherit;
-  font-size: var(--fs-label);
-  color: var(--accent);
-  cursor: pointer;
-  text-decoration: underline;
-  text-decoration-color: var(--accent-border);
-  text-underline-offset: 2px;
-}
-
-.taskbar-detail:hover { text-decoration-color: currentColor; }
-
-/* 后端失联横幅：跟进度条同一个位置，也是常驻顶栏，但语气完全不同 */
-.connbar {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  padding: var(--sp-2) var(--sp-3);
-  border: 1px solid var(--danger-border-solid);
-  background: var(--danger-soft);
-  color: var(--danger-text);
-  border-radius: var(--r-sm);
-  font-size: var(--fs-label);
-}
-
-.connbar .btn { margin-left: auto; flex: none; }
-
-/* 跳到主内容：键盘用户的第一个落点。平时移出视口，获得焦点才滑进来 */
-.skip-link {
-  position: fixed;
-  top: var(--sp-2);
-  left: var(--sp-2);
-  z-index: var(--z-skip-link);
-  padding: var(--sp-2) var(--sp-3);
-  border-radius: var(--r-sm);
-  background: var(--accent-bg);
-  color: var(--accent-on);
-  font-size: var(--fs-sm);
-  text-decoration: none;
-  transform: translateY(calc(-100% - var(--sp-3)));
-  transition: transform var(--dur-fast) var(--ease-out);
-}
-
-.skip-link:focus { transform: none; }
-
-/* 只在内容确实从下面滚过去时才需要模糊；不加 backdrop-filter 时纯色也够看。
-   不透明度给到 92%：再透就会看到底下的文字从顶栏里浮出来，太吵。 */
-@supports (backdrop-filter: blur(8px)) {
-  .topbar {
-    background:
-      radial-gradient(120% 140% at 12% 0%, var(--topbar-tint), transparent 60%),
-      color-mix(in srgb, var(--bg) 92%, transparent);
-    backdrop-filter: blur(12px) saturate(1.1);
-  }
-}
-
-.brand { display: flex; align-items: center; gap: var(--sp-3); min-width: 0; }
-
-.logo {
-  width: 30px;
-  height: 30px;
-  flex: none;
-  border-radius: var(--r-sm);
-  background: linear-gradient(150deg, var(--accent), var(--accent-bg));
-  position: relative;
-  box-shadow: var(--shadow-1), var(--edge-highlight);
-}
-
-.logo::after {
-  content: "";
-  position: absolute;
-  inset: 9px;
-  border-radius: 2px;
-  background: var(--bg);
-  opacity: 0.85;
-}
-
-.brand-text { min-width: 0; }
-.brand h1 { font-size: var(--fs-title); }
-
-.sub {
-  margin: 1px 0 0;
-  font-size: var(--fs-label);
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 62vw;
-}
-
-.sub.warn { color: var(--warn); }
-
-.actions { display: flex; gap: var(--sp-2); align-items: center; }
-
-/* 主题按钮：图标按钮，但要和旁边三个按钮完全等高，否则顶栏右端参差不齐。
-   不写死高度，也不靠 align-items: stretch + aspect-ratio 联动——那会让高度与宽度
-   互相依赖成环，实测能把按钮撑到 302px。这里照抄 .btn 的纵向构成：
-   同样的 0.5rem 内边距，图标高度取 .btn 里那行文字的行高（1.2 × --fs-sm），
-   于是两者天然等高；再用 aspect-ratio 由高度推出宽度，得到正方形。 */
-.theme-btn {
-  width: auto;
-  aspect-ratio: 1;
-  padding: 0.5rem;
-  border: 1px solid transparent;
-  flex: none;
-  border-radius: var(--r-sm);
-  color: var(--text-dim);
-}
-
-.theme-btn svg {
-  width: calc(1.2 * var(--fs-sm));
-  height: calc(1.2 * var(--fs-sm));
-  display: block;
-}
-
-.theme-btn:hover { border-color: var(--border-strong); color: var(--text); }
-
-/* ---------- 内容容器 ---------- */
-
-main {
-  /* 1120 是桌面窗口的宽度，再宽没有意义；浏览器模式下放宽到 1280，
-     七列表格能少一点横向挤压 */
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: var(--sp-6) var(--sp-6);
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-5);
-}
-
-/* ---------- 概览 ----------
-   四张等宽卡片是最模板化的排法，而且把四个数字说成一样重要。
-   这里按"要不要动手"分主次：待清理 / 可释放空间是主（大字号 + 占比条），
-   已订阅 / 磁盘文件夹是背景信息（小一号）。 */
-.stats {
+/* 键值对：路径可能很长，必须允许在任意位置断行，否则会把面板撑破 */
+.meta-list {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--sp-3);
-}
-
-.stat {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  padding: var(--sp-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-1);
-  box-shadow: var(--shadow-1), var(--edge-highlight);
-}
-
-.stat-label { font-size: var(--fs-label); color: var(--muted); }
-
-.stat-value {
-  font-size: var(--fs-num-sm);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: var(--track-tight);
-  line-height: var(--lh-tight);
-  transition: color var(--dur-base) var(--ease-out);
-}
-
-/* 主次：待清理与可释放空间是"这次要动的东西"，字号给足 */
-.stat.primary .stat-value { font-size: var(--fs-num); }
-.stat.primary { border-color: var(--border-strong); }
-
-.stat-value.warn { color: var(--warn); }
-.stat-value.good { color: var(--good); }
-.stat-foot { font-size: var(--fs-label); color: var(--muted); min-height: 1.2em; text-wrap: pretty; }
-
-/* 待清理占比条：让"4 个"这个数字有参照——分母是磁盘上的文件夹总数。
-   纯装饰，读屏不看它（aria-hidden）。 */
-.stat-bar {
-  height: 3px;
-  margin-top: var(--sp-1);
-  border-radius: var(--r-full);
-  background: var(--surface-3);
-  overflow: hidden;
-}
-
-.stat-bar-fill {
-  height: 100%;
-  width: 100%;
-  background: var(--warn);
-  border-radius: var(--r-full);
-  transform: scaleX(0);
-  transform-origin: left center;
-  transition: transform var(--dur-slow) var(--ease-out);
-}
-
-.stat-bar.empty .stat-bar-fill { background: var(--good); }
-
-/* ---------- 卡片 ---------- */
-
-.card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  overflow: hidden;
-  box-shadow: var(--shadow-1);
-}
-
-/* 卡片头改成两列网格，而不是 flex + space-between。
-   原因：右侧按钮组的文案会随选中数量变化（「清理选中」↔「清理选中 12 项 · 345.67 MB」），
-   用 space-between 时按钮一变宽就把左边整组往左推，连续勾选时鼠标落点会偏
-   （实测空选 ↔ 选中 12 项相差 106px）。网格里左侧是 minmax(0,1fr)、右侧是 auto，
-   右边变宽只会挤压左边那一列，而左边的内容是左对齐的——位置纹丝不动。
-   这样就不需要再用 min-width 把按钮宽度钉死了。 */
-.card-head {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: var(--sp-4);
-  padding: var(--sp-3) var(--sp-4);
-  border-bottom: 1px solid var(--border);
-  background: linear-gradient(var(--surface-2), var(--surface));
-}
-
-.card-head h2 {
-  font-size: var(--fs-base);
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  min-width: 0;
-}
-
-.card-tools {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  justify-self: end;
-}
-
-/* 极窄时按钮组换到下一行，避免把标题挤没 */
-@media (max-width: 640px) {
-  .card-head { grid-template-columns: minmax(0, 1fr); }
-  .card-tools { justify-self: start; flex-wrap: wrap; }
-}
-
-/* ---------- 抽屉 ---------- */
-
-.drawer {
-  position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: min(460px, 100vw);
-  background: var(--surface);
-  border-left: 1px solid var(--border);
-  z-index: var(--z-drawer);
-  display: flex;
-  flex-direction: column;
-  box-shadow: var(--shadow-drawer);
-  animation: slide-in var(--dur-base) var(--ease-out);
-}
-
-.drawer.wide { width: min(720px, 100vw); }
-
-@keyframes slide-in {
-  from { transform: translateX(16px); opacity: 0; }
-  to { transform: none; opacity: 1; }
-}
-
-.drawer-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-3);
-  padding: var(--sp-3) var(--sp-4);
-  border-bottom: 1px solid var(--border);
-  background: var(--surface-2);
-  flex: none;
-}
-
-.drawer-head h3 { font-size: var(--fs-base); }
-.drawer-head-actions { display: flex; align-items: center; gap: var(--sp-3); }
-.drawer-body {
-  padding: var(--sp-4);
-  overflow: auto;
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-4);
-}
-.drawer-actions { display: flex; gap: var(--sp-2); }
-
-/* 高级抽屉里的分段：位置设置 / 运行日志 / 关于 */
-.drawer-section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-  padding-bottom: var(--sp-5);
-  border-bottom: 1px solid var(--border);
-}
-
-.drawer-section:last-child { border-bottom: 0; padding-bottom: 0; }
-
-/* 段标题就是普通的次级小标题：中文没有大小写，uppercase 对它完全无效，
-   真正生效的只有字距——按汉字调，别照拉丁大写小标题的 0.06em 抄 */
-.drawer-section h4 {
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--sp-1) var(--sp-3);
   margin: 0;
   font-size: var(--fs-label);
-  font-weight: 600;
-  letter-spacing: var(--track-label);
-  color: var(--muted);
 }
 
-.drawer-section-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-3);
+.meta-list dt { color: var(--muted); white-space: nowrap; }
+
+.meta-list dd {
+  margin: 0;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
 }
 
-/* 抽屉里的说明改成描边小块，不再是卡片式的整条横幅 */
-.drawer-section .hint {
-  padding: var(--sp-2) var(--sp-3);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  line-height: var(--lh-snug);
-  background: transparent;
-  text-wrap: pretty;
+/* 日志面板：日志本身要能长高，所以它内部滚动，面板不滚 */
+.panel-log .log { flex: 1; min-height: 240px; max-height: none; }
+
+/* 宽屏下分两栏：左边是设置与关于，右边整列留给日志。
+   日志是唯一需要纵向空间的块，给它一整列比让它压在两张卡片下面合理。 */
+@media (min-width: 1024px) {
+  .settings { grid-template-columns: minmax(320px, 400px) minmax(0, 1fr); }
+  .panel-log { grid-column: 2; grid-row: 1 / span 3; }
 }
 
-.drawer-section .joblog.tall {
-  flex: none;
-  min-height: 180px;
-  max-height: 320px;
-}
+/* ==========================================================================
+   窄屏
+   ========================================================================== */
 
-/* ---------- 窄屏 ----------
-   折叠阈值必须和窗口最小宽度对齐：桌面窗口 min_size 是 780×560，内容区约 764px，
-   所以 760 这个阈值在桌面窗口里永远不触发（折叠列等于死代码），
-   而最小宽度下七列表格（约 1040px）会横向溢出。改成两级：
-   1024 收「类型」列，900 再收「标注大小」列——桌面窗口缩到最小也能用。 */
-@media (max-width: 1024px) {
+/* 900px 以下：表格的次要列让位。列宽是这里唯一不能通融的东西——
+   标题列被挤到看不见，这张表就没法用了。 */
+@media (max-width: 1023px) {
   .col-kind { display: none; }
-  td.col-kind { display: none; }
 }
 
-@media (max-width: 900px) {
-  .topbar { padding: var(--sp-3) var(--sp-4); }
-  main { padding: var(--sp-4); }
-  .sub { max-width: 100%; }
-  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .tablewrap { max-height: none; }
-  th, td { padding: var(--sp-2) var(--sp-3); }
-  /* 尺寸列只留「磁盘占用」：窄屏放不下两列，而它才是"删掉能腾多少 / 有多大" */
+@media (max-width: 899px) {
+  /* 标注大小与磁盘占用只能留一个，留磁盘占用：它才是"删了能腾多少"的答案 */
   .col-declared { display: none; }
-  td.col-declared { display: none; }
-  /* 窄屏下这一行放不下两句，让搜索框占满 */
-  .sub-hint { display: none; }
-  .stat.primary .stat-value { font-size: var(--fs-num-sm); }
-}
-
-@media (max-width: 560px) {
-  .stats { grid-template-columns: minmax(0, 1fr); }
-  .drawer, .drawer.wide { width: 100vw; }
+  .col-id { width: 104px; }
+  .view-tools .search-wrap { width: 100%; }
+  .view-tools { flex-wrap: wrap; row-gap: var(--sp-2); }
 }

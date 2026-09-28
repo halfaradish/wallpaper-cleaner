@@ -3,54 +3,65 @@
    分三层，改主题只动第二层：
 
    1. 原色与标度（--p-* / --sp-* / --r-* / --fs-* ...）：不随主题变化。
-      色阶是一整条蓝灰中性色带，深浅主题共用同一族灰——混暖灰和冷灰是让界面
-      显脏的最快方式。
+      色阶是一整条冷调蓝灰带，深浅主题共用同一族灰——深色一套冷灰、浅色一套
+      暖灰，是让两套主题看起来像两个产品的常见原因。
    2. 语义层（--bg / --surface / --text / --accent ...）：组件只准用这一层。
       换主题就是把这一层重新指一遍。
    3. 组件层：组件样式里不允许再出现任何字面颜色值，否则浅色主题会漏。
 
-   另外两条规则：
+   视觉方向是「精密仪器」：冷灰近黑底 + 单一钢蓝点缀，层次靠发丝线与间距而不是
+   阴影，数字一律等宽。蓝色只出现在四个地方——选中态、主按钮、焦点环、进度。
+   这不是「少即是多」的口号，而是让蓝有信息量：界面上每一处蓝都在说
+   「这里可以动」或「这里正在动」。
+
+   三条硬规则：
    - 字号一律用 rem，浏览器缩放与系统文字大小才会跟着变；只有 1px 边框、圆角
      与图标这类"不该随字号缩放"的尺寸用 px。
    - 所有颜色都通过 var() 引用，测试会拦住漏网的硬编码色值。
+   - tokens.css 里绝不在 @media 内写裸 :root 选择器：测试的 CSS 扫描器会把它
+     当成基础块覆盖掉，浅色主题会静默失效。动效偏好那类覆盖写在 base.css。
    ========================================================================== */
 
 :root {
   /* ---------- 1. 中性色阶（冷调蓝灰，一条带子） ---------- */
-  --p-ink-1000: #0a0d11;   /* 比页面底色更深，用于日志这种"凹陷"区域 */
-  --p-ink-950: #0d1014;    /* 页面底色 */
-  --p-ink-900: #141922;
-  --p-ink-850: #1a212c;
-  --p-ink-800: #212a37;
-  --p-ink-750: #28323f;
-  --p-ink-700: #262e3b;    /* 描边 */
-  --p-ink-600: #35404f;    /* 强描边 */
-  --p-ink-500: #4a5666;
-  --p-ink-400: #6b7688;
-  --p-ink-300: #8a95a7;    /* 最暗的次要文字：在最亮的表面上也有 4.78:1 */
-  --p-ink-200: #aeb7c6;
-  --p-ink-100: #e4e8ef;
+  --p-ink-1000: #070a0e;   /* 比页面底色更深，用于日志这种"凹陷"区域 */
+  --p-ink-950: #0b0f14;    /* 页面底色：近黑但不是纯黑，纯黑会杀掉所有层次 */
+  --p-ink-900: #111720;    /* 面板 */
+  --p-ink-850: #171f2b;    /* 面板内嵌区块 */
+  --p-ink-800: #1e2836;    /* 抬起一档的面板 */
+  --p-ink-750: #25303f;    /* 落在 ink-800 上的悬停态 */
+  --p-ink-700: #2c3846;    /* 描边 */
+  --p-ink-600: #3a4757;    /* 强描边 */
+  --p-ink-500: #4e5c6e;
+  --p-ink-400: #6e7b8d;
+  --p-ink-300: #8d9aab;    /* 最暗的次要文字：在最亮的表面上也有 5.20:1 */
+  --p-ink-200: #b1bcca;
+  --p-ink-100: #e7ebf1;
 
-  /* ---------- 1. 强调色：只有一个色相（蓝，饱和度 65% < 80%） ---------- */
-  --p-accent-700: #27506f;
-  --p-accent-600: #2f5d86;  /* 按钮底色 */
-  --p-accent-500: #3a6f9c;  /* 按钮悬停 */
-  --p-accent-400: #6aa9e0;  /* 主强调色 */
-  --p-accent-100: #eaf3fb;  /* 强调底上的文字 */
+  /* ---------- 1. 强调色：只有一个色相（钢蓝，饱和度 < 70%） ----------
+     600 是按钮底，400 是深底上可读的强调色。两个值分开是因为同一个蓝不可能
+     既当得住按钮底色（要深到白字读得清）又当得住深底上的正文（要亮到读得清）。 */
+  --p-blue-800: #1b3f60;
+  --p-blue-700: #24557f;
+  --p-blue-600: #2a659c;   /* 主按钮底：与按钮文字 5.44:1 */
+  --p-blue-500: #3070a8;   /* 主按钮悬停：与按钮文字 4.67:1，再亮就不够了 */
+  --p-blue-400: #6fa8dc;   /* 深底上的可读强调色：对页面底 7.5:1 */
+  --p-blue-100: #eaf3fb;   /* 按钮底上的文字 */
 
-  /* ---------- 1. 语义色：每种只有一个色相，饱和度统一压低 ---------- */
-  --p-red-600: #6b2a26;
-  --p-red-500: #85332d;
-  --p-red-400: #e0574f;
-  --p-red-300: #f3c4c0;
+  /* ---------- 1. 语义色：每种只有一个色相，饱和度统一压低 ----------
+     深色主题下这三个色都不该"发光"：状态色是背景板上的信息，不是装饰。 */
+  --p-red-600: #8c3a33;
+  --p-red-500: #a3423a;
+  --p-red-400: #e0685f;
+  --p-red-300: #f0bdb8;
   --p-amber-600: #7a6432;
   --p-amber-500: #d9a441;
-  --p-amber-300: #ecd6a8;
+  --p-amber-300: #f0d9a8;
   --p-green-600: #2f6b48;
-  --p-green-500: #4fb477;
-  --p-green-300: #cdebd9;
+  --p-green-500: #55b37c;
+  --p-green-300: #b7e3c9;
 
-  /* ---------- 1. 间距（4 基数，越往上越少用） ---------- */
+  /* ---------- 1. 间距（4 基数；组件里不再出现 0.6875rem 这类临时值） ---------- */
   --sp-1: 0.25rem;   /*  4px */
   --sp-2: 0.5rem;    /*  8px */
   --sp-3: 0.75rem;   /* 12px */
@@ -59,12 +70,15 @@
   --sp-6: 1.5rem;    /* 24px */
   --sp-7: 2rem;      /* 32px */
   --sp-8: 2.5rem;    /* 40px */
+  --sp-9: 3rem;      /* 48px */
+  --sp-10: 4rem;     /* 64px */
 
-  /* ---------- 1. 圆角（内层紧、外层松） ---------- */
-  --r-xs: 0.25rem;
-  --r-sm: 0.375rem;
-  --r-md: 0.5rem;
-  --r-lg: 0.75rem;
+  /* ---------- 1. 圆角（形状锁：面板 14 / 控件 9 / 徽标全圆 / 小方块 4） ----------
+     只有这四档。混用无规则的圆角是"看起来没做完"的头号原因，所以把规则写死
+     在名字里，组件按用途挑，而不是按感觉挑。 */
+  --r-xs: 4px;
+  --r-control: 9px;
+  --r-panel: 14px;
   --r-full: 999px;
 
   /* ---------- 1. 字号（rem，1rem = 16px） ---------- */
@@ -72,8 +86,9 @@
   --fs-label: 0.75rem;    /* 12px 标签 */
   --fs-sm: 0.8125rem;     /* 13px 正文小号 */
   --fs-base: 0.875rem;    /* 14px 正文 */
-  --fs-title: 1rem;       /* 16px 卡片标题 */
+  --fs-title: 1rem;       /* 16px 面板标题 */
   --fs-lg: 1.125rem;      /* 18px 弹窗标题 */
+  --fs-xl: 1.375rem;      /* 22px 视图标题 */
   --fs-num-sm: 1.25rem;   /* 20px 次级数字 */
   --fs-num: 1.75rem;      /* 28px 主数字 */
 
@@ -82,7 +97,7 @@
   --lh-base: 1.6;
   --lh-loose: 1.75;
 
-  /* 字距：中文标签给 0.02em 就够。原先 0.04–0.06em 是照拉丁大写小标题调的，
+  /* 字距：中文标签给 0.02em 就够。0.04–0.06em 是照拉丁大写小标题调的，
      而界面上那些标签全是中文，uppercase 不生效、只剩过松的字距。 */
   --track-tight: -0.02em;
   --track-normal: 0;
@@ -93,29 +108,41 @@
      CJK 由雅黑接住——雅黑的 UI 变体比正文变体更适配界面小字 */
   --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system,
              "Microsoft YaHei UI", "Microsoft YaHei", Roboto, sans-serif;
+  /* 标题与大号数字用 Display 变体：同一族，但在大字号下字面更紧、更有形。
+     没装就退回 Text 变体，观感略平但不会变形。 */
+  --font-display: "Segoe UI Variable Display", "Segoe UI Variable Text", "Segoe UI",
+                  system-ui, -apple-system, "Microsoft YaHei UI", "Microsoft YaHei",
+                  Roboto, sans-serif;
   /* 等宽里故意把中日韩等宽排在 Consolas 前面：日志正文是中文，
-     Consolas 没有 CJK 字形、会回退成非等宽，中英混排就对不齐了。
-     这两个不一定装了，装了就优先用，没装照样落到 Consolas。 */
+     Consolas 没有 CJK 字形、会回退成非等宽，中英混排就对不齐了。 */
   --font-mono: "Cascadia Mono", "Cascadia Code", "Sarasa Mono SC", "Sarasa Term SC",
                Consolas, ui-monospace, "Liberation Mono", monospace;
 
-  /* ---------- 1. 层级（不再出现 9999 这种数字） ---------- */
-  --z-base: 1;         /* 表头吸顶，只在表格内部比较 */
-  --z-topbar: 20;
-  --z-drawer: 40;
-  --z-overlay: 60;
+  /* ---------- 1. 层级 ---------- */
+  --z-sticky: 1;       /* 表头吸顶，只在表格内部比较 */
+  --z-rail: 20;        /* 导航栏 */
+  --z-topbar: 21;
   --z-lightbox: 70;
   --z-toast: 80;
   --z-skip-link: 100;
+  /* 原生 <dialog> 走 top-layer，不需要 z-index；--z-toast 之所以比它大，
+     是因为 Toast 也用 showModal 之外的方式浮着，两者不打架 */
 
-  /* ---------- 1. 动效 ---------- */
-  --dur-instant: 80ms;
-  --dur-fast: 130ms;
-  --dur-base: 200ms;
-  --dur-slow: 300ms;
-  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  /* ---------- 1. 动效 ----------
+     每一档都有明确的用途，组件按用途挑：1 按压、2 悬停/变色、3 状态切换与弹窗、
+     4 视图切换、5 大块位移。曲线只有三条：进、回弹、出。 */
+  --dur-1: 90ms;
+  --dur-2: 140ms;
+  --dur-3: 200ms;
+  --dur-4: 300ms;
+  --dur-5: 460ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
-  --ease-spring: cubic-bezier(0.34, 1.3, 0.64, 1);
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+  /* 视图切换的入场位移方向。由 JS 按"往导航栏的哪个方向点"改写为 ±8px，
+     这里给一个默认值，免得 JS 还没跑时 keyframes 里引用到一个空值 */
+  --view-enter-x: 8px;
 
   /* ==========================================================================
      2. 语义层（深色，默认）
@@ -128,36 +155,37 @@
   --surface: var(--p-ink-900);
   --surface-2: var(--p-ink-850);
   --surface-3: var(--p-ink-800);
-  --surface-4: var(--p-ink-750);   /* 落在 surface-3 上的悬停态 */
 
   --border: var(--p-ink-700);
   --border-strong: var(--p-ink-600);
-  --border-faint: rgb(38 46 59 / 0.6);   /* 表格行分隔线 */
+  --border-faint: rgb(44 56 70 / 0.6);      /* 表格行分隔线：比边框更轻 */
+  /* 面板顶边的 1px 内高光。层次靠它和发丝线，不靠阴影——阴影留给真正浮起的层 */
+  --edge-highlight: inset 0 1px 0 rgb(231 235 241 / 0.05);
 
   --text: var(--p-ink-100);
   --text-dim: var(--p-ink-200);
   --muted: var(--p-ink-300);
 
-  --accent: var(--p-accent-400);
-  --accent-bg: var(--p-accent-600);
-  --accent-bg-hover: var(--p-accent-500);
-  --accent-bg-press: var(--p-accent-700);
-  --accent-on: var(--p-accent-100);
-  --accent-soft: rgb(106 169 224 / 0.12);
-  --accent-border: rgb(106 169 224 / 0.4);
-  --accent-row: rgb(106 169 224 / 0.07);
+  --accent: var(--p-blue-400);
+  --accent-bg: var(--p-blue-600);
+  --accent-bg-hover: var(--p-blue-500);
+  --accent-bg-press: var(--p-blue-700);
+  --accent-on: var(--p-blue-100);
+  --accent-soft: rgb(111 168 220 / 0.12);
+  --accent-border: rgb(111 168 220 / 0.4);
+  --accent-row: rgb(111 168 220 / 0.07);
 
   --danger: var(--p-red-400);
   --danger-bg: var(--p-red-600);
   --danger-bg-hover: var(--p-red-500);
-  --danger-border: rgb(224 87 79 / 0.45);
+  --danger-border: rgb(224 104 95 / 0.45);
   --danger-border-solid: var(--p-red-600);
-  --danger-on: #ffdcd8;
-  --danger-soft: rgb(224 87 79 / 0.1);
+  --danger-on: #fbdfdc;
+  --danger-soft: rgb(224 104 95 / 0.1);
   --danger-text: var(--p-red-300);
   /* 提示条/日志那种"深色底"比按钮底还要深一档：错误提示应当是全场最沉的，
      按钮底那种中亮度铺满一条会很吵 */
-  --danger-surface: #3a1f1c;
+  --danger-surface: #3a201c;
 
   --warn: var(--p-amber-500);
   --warn-border: rgb(217 164 65 / 0.4);
@@ -166,44 +194,41 @@
   --warn-text: var(--p-amber-300);
 
   --good: var(--p-green-500);
-  --good-border: rgb(79 180 119 / 0.45);
+  --good-border: rgb(85 179 124 / 0.45);
   --good-border-solid: var(--p-green-600);
-  --good-soft: rgb(79 180 119 / 0.1);
+  --good-soft: rgb(85 179 124 / 0.1);
   --good-text: var(--p-green-300);
   --good-surface: #16301f;
 
   /* 弹窗遮罩：与底色同色相，压暗但不发黑 */
   --scrim: rgb(6 8 11 / 0.72);
-  --scrim-strong: rgb(6 8 11 / 0.85);
 
-  /* 阴影一律带底色的蓝调，而不是纯黑：纯黑阴影会让暗色界面显灰 */
+  /* 阴影一律带底色的蓝调而不是纯黑：纯黑阴影会让暗色界面显灰。
+     只给真正浮起的层用（弹窗、Toast），面板一律不用。 */
   --shadow-1: 0 1px 2px rgb(4 8 16 / 0.35);
-  --shadow-2: 0 4px 12px rgb(4 8 16 / 0.4);
-  --shadow-3: 0 12px 30px rgb(4 8 16 / 0.45);
-  --shadow-4: 0 24px 60px rgb(4 8 16 / 0.55);
-  --shadow-drawer: -18px 0 40px rgb(4 8 16 / 0.45);
-  /* 1px 内高光：模拟顶面受光，让面板有厚度而不是一张贴纸 */
-  --edge-highlight: inset 0 1px 0 rgb(226 234 245 / 0.05);
+  --shadow-2: 0 8px 24px rgb(4 8 16 / 0.45);
+  --shadow-3: 0 24px 60px rgb(4 8 16 / 0.55);
   --focus-ring: var(--accent);
 
+  --row-hover: var(--p-ink-850);        /* 表格行悬停 */
+  --rail-bg: var(--p-ink-1000);         /* 导航栏比页面底更深：它是外壳，不是内容 */
   --log-bg: var(--p-ink-1000);
   --scrollbar-thumb: var(--p-ink-600);
   --scrollbar-thumb-hover: var(--p-ink-500);
   --grain-opacity: 0.035;
-  --thumb-hover-scale: 1.03;
+  --thumb-hover-scale: 1.04;
   /* 等待 Steam 同步的行压暗多少。深色下 0.72 够用，浅色下同样的透明度会把
      深色文字冲淡到 4.34:1（低于 AA），所以两套主题给不同的值。 */
   --pending-opacity: 0.72;
   /* 顶栏左上角那点受光的偏色，让它不是一块纯色板 */
-  --topbar-tint: rgb(106 169 224 / 0.06);
+  --topbar-tint: rgb(111 168 220 / 0.05);
 }
 
 /* ==========================================================================
    2b. 语义层（浅色）
 
    只重新指向原色，一条组件样式都不动——这正是"组件层不出现字面颜色"的价值。
-   灰色仍然沿用同一族冷调蓝灰，只是翻到浅端：深色一套冷灰、浅色一套暖灰，
-   是让两套主题看起来像两个产品的常见原因。
+   灰色仍沿用同一族冷调蓝灰，只是翻到浅端。
 
    浅色下每个前景/背景配对都按 ≥4.5:1 校过（tests/test_static.py 里有断言）。
 
@@ -217,65 +242,65 @@
 :root[data-theme="light"] {
   color-scheme: light;
 /* >>>light-tokens>>> */
-  --p-ink-1000: #ffffff;   /* 浅色下"凹陷"区反而最亮：日志块用白底更清楚 */
-  --p-ink-950: #eef1f5;    /* 页面底色：不用纯白，压一点才不刺眼 */
-  --p-ink-900: #f8fafc;
-  --p-ink-850: #eff2f6;
-  --p-ink-800: #e4e9ef;
-  --p-ink-750: #d9e0e8;
-  --p-ink-700: #d3dae2;
-  --p-ink-600: #bcc6d2;
-  --p-ink-500: #a9b4c2;
-  --p-ink-400: #8b97a6;
-  --p-ink-300: #5a6779;    /* 次要文字：在最亮的表面上 5.50:1，最暗的表面上 4.71:1 */
-  --p-ink-200: #3f4c5c;
-  --p-ink-100: #16202c;    /* 正文不用纯黑：纯黑在浅底上会晕开 */
-  --p-accent-700: #17456b;
-  --p-accent-600: #23608f;
-  --p-accent-500: #1b527c;
-  --p-accent-400: #1f5c8f;  /* 浅底上的强调色必须比深色版暗得多才有对比 */
-  --p-accent-100: #ffffff;
-  --p-red-600: #a8322a;
-  --p-red-500: #8f2a23;
-  --p-red-400: #a8322a;
-  --p-red-300: #a8322a;
-  --p-amber-600: #7d5800;
-  --p-amber-500: #7d5800;
-  --p-amber-300: #7d5800;
-  --p-green-600: #1f6b42;
-  --p-green-500: #1f6b42;
-  --p-green-300: #1f6b42;
-  --border-faint: rgb(211 218 226 / 0.75);
-  --accent-soft: rgb(31 92 143 / 0.1);
-  --accent-border: rgb(31 92 143 / 0.35);
-  --accent-row: rgb(31 92 143 / 0.07);
-  --danger-border: rgb(168 50 42 / 0.4);
-  --danger-border-solid: rgb(168 50 42 / 0.45);
-  --danger-soft: rgb(168 50 42 / 0.08);
-  --danger-on: #ffffff;
-  --danger-text: #a8322a;
+  --p-ink-1000: #fcfdfe;   /* 浅色下"凹陷"区反而最亮：日志块用白底更清楚 */
+  --p-ink-950: #f4f6fa;    /* 页面底色：不用纯白，压一点才不刺眼 */
+  --p-ink-900: #fcfdfe;
+  --p-ink-850: #f1f4f8;
+  --p-ink-800: #e7ecf2;
+  --p-ink-750: #dce3eb;
+  --p-ink-700: #d3dbe4;
+  --p-ink-600: #b8c3cf;
+  --p-ink-500: #99a5b4;
+  --p-ink-400: #7b8798;
+  --p-ink-300: #596575;    /* 次要文字：在最亮的表面上 6.6:1，最暗的表面上 4.99:1 */
+  --p-ink-200: #3d4a59;
+  --p-ink-100: #141b24;    /* 正文不用纯黑：纯黑在浅底上会晕开 */
+  --p-blue-800: #0f3550;
+  --p-blue-700: #14405f;
+  --p-blue-600: #1b5e8c;   /* 浅底上的强调色必须比深色版暗得多才有对比 */
+  --p-blue-500: #17507a;   /* 悬停在浅色主题里是变深：与按钮文字 7.1:1 */
+  --p-blue-400: #1b5e8c;
+  --p-blue-100: #f4f9fd;
+  --p-red-600: #b23a31;
+  --p-red-500: #9c3129;
+  --p-red-400: #a32b23;
+  --p-red-300: #a32b23;
+  --p-amber-600: #6b4a00;
+  --p-amber-500: #6b4a00;
+  --p-amber-300: #6b4a00;
+  --p-green-600: #14663c;
+  --p-green-500: #14663c;
+  --p-green-300: #14663c;
+  --border-faint: rgb(211 219 228 / 0.8);
+  --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.9);
+  --accent-soft: rgb(27 94 140 / 0.1);
+  --accent-border: rgb(27 94 140 / 0.35);
+  --accent-row: rgb(27 94 140 / 0.07);
+  --danger-border: rgb(178 58 49 / 0.4);
+  --danger-border-solid: rgb(178 58 49 / 0.45);
+  --danger-soft: rgb(178 58 49 / 0.08);
+  --danger-on: #fdf5f4;
+  --danger-text: #a32b23;
   --danger-surface: #fdf0ef;
-  --warn-border: rgb(125 88 0 / 0.35);
-  --warn-border-solid: rgb(125 88 0 / 0.4);
+  --warn-border: rgb(107 74 0 / 0.35);
+  --warn-border-solid: rgb(107 74 0 / 0.4);
   --warn-soft: rgb(125 88 0 / 0.08);
-  --warn-text: #7d5800;
-  --good-border: rgb(31 107 66 / 0.35);
-  --good-border-solid: rgb(31 107 66 / 0.4);
+  --warn-text: #6b4a00;
+  --good-border: rgb(20 102 60 / 0.35);
+  --good-border-solid: rgb(20 102 60 / 0.4);
   --good-soft: rgb(31 107 66 / 0.08);
-  --good-text: #1f6b42;
+  --good-text: #14663c;
   --good-surface: #eef7f1;
   --scrim: rgb(23 32 44 / 0.4);
-  --scrim-strong: rgb(23 32 44 / 0.55);
   /* 浅色下的阴影要更淡、更散：深色阴影在浅底上会显脏 */
   --shadow-1: 0 1px 2px rgb(31 45 65 / 0.08);
-  --shadow-2: 0 4px 12px rgb(31 45 65 / 0.1);
-  --shadow-3: 0 12px 30px rgb(31 45 65 / 0.12);
-  --shadow-4: 0 24px 60px rgb(31 45 65 / 0.16);
-  --shadow-drawer: -18px 0 40px rgb(31 45 65 / 0.12);
-  --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.8);
-  --focus-ring: #1f5c8f;
+  --shadow-2: 0 8px 24px rgb(31 45 65 / 0.12);
+  --shadow-3: 0 24px 60px rgb(31 45 65 / 0.18);
+  --focus-ring: #1b5e8c;
+  --row-hover: var(--p-ink-850);
+  --rail-bg: #eef1f6;      /* 浅色下导航栏比内容略深：同样是"外壳"的意思 */
   --log-bg: var(--p-ink-1000);
-  --topbar-tint: rgb(31 92 143 / 0.05);
+  --topbar-tint: rgb(27 94 140 / 0.04);
   /* 浅底上的噪点像屏幕脏了，直接关掉 */
   --grain-opacity: 0;
   --pending-opacity: 0.82;
@@ -287,65 +312,65 @@
   :root:not([data-theme="dark"]):not([data-theme="light"]) {
     color-scheme: light;
   /* >>>light-tokens>>> */
-  --p-ink-1000: #ffffff;   /* 浅色下"凹陷"区反而最亮：日志块用白底更清楚 */
-  --p-ink-950: #eef1f5;    /* 页面底色：不用纯白，压一点才不刺眼 */
-  --p-ink-900: #f8fafc;
-  --p-ink-850: #eff2f6;
-  --p-ink-800: #e4e9ef;
-  --p-ink-750: #d9e0e8;
-  --p-ink-700: #d3dae2;
-  --p-ink-600: #bcc6d2;
-  --p-ink-500: #a9b4c2;
-  --p-ink-400: #8b97a6;
-  --p-ink-300: #5a6779;    /* 次要文字：在最亮的表面上 5.50:1，最暗的表面上 4.71:1 */
-  --p-ink-200: #3f4c5c;
-  --p-ink-100: #16202c;    /* 正文不用纯黑：纯黑在浅底上会晕开 */
-  --p-accent-700: #17456b;
-  --p-accent-600: #23608f;
-  --p-accent-500: #1b527c;
-  --p-accent-400: #1f5c8f;  /* 浅底上的强调色必须比深色版暗得多才有对比 */
-  --p-accent-100: #ffffff;
-  --p-red-600: #a8322a;
-  --p-red-500: #8f2a23;
-  --p-red-400: #a8322a;
-  --p-red-300: #a8322a;
-  --p-amber-600: #7d5800;
-  --p-amber-500: #7d5800;
-  --p-amber-300: #7d5800;
-  --p-green-600: #1f6b42;
-  --p-green-500: #1f6b42;
-  --p-green-300: #1f6b42;
-  --border-faint: rgb(211 218 226 / 0.75);
-  --accent-soft: rgb(31 92 143 / 0.1);
-  --accent-border: rgb(31 92 143 / 0.35);
-  --accent-row: rgb(31 92 143 / 0.07);
-  --danger-border: rgb(168 50 42 / 0.4);
-  --danger-border-solid: rgb(168 50 42 / 0.45);
-  --danger-soft: rgb(168 50 42 / 0.08);
-  --danger-on: #ffffff;
-  --danger-text: #a8322a;
+  --p-ink-1000: #fcfdfe;   /* 浅色下"凹陷"区反而最亮：日志块用白底更清楚 */
+  --p-ink-950: #f4f6fa;    /* 页面底色：不用纯白，压一点才不刺眼 */
+  --p-ink-900: #fcfdfe;
+  --p-ink-850: #f1f4f8;
+  --p-ink-800: #e7ecf2;
+  --p-ink-750: #dce3eb;
+  --p-ink-700: #d3dbe4;
+  --p-ink-600: #b8c3cf;
+  --p-ink-500: #99a5b4;
+  --p-ink-400: #7b8798;
+  --p-ink-300: #596575;    /* 次要文字：在最亮的表面上 6.6:1，最暗的表面上 4.99:1 */
+  --p-ink-200: #3d4a59;
+  --p-ink-100: #141b24;    /* 正文不用纯黑：纯黑在浅底上会晕开 */
+  --p-blue-800: #0f3550;
+  --p-blue-700: #14405f;
+  --p-blue-600: #1b5e8c;   /* 浅底上的强调色必须比深色版暗得多才有对比 */
+  --p-blue-500: #17507a;   /* 悬停在浅色主题里是变深：与按钮文字 7.1:1 */
+  --p-blue-400: #1b5e8c;
+  --p-blue-100: #f4f9fd;
+  --p-red-600: #b23a31;
+  --p-red-500: #9c3129;
+  --p-red-400: #a32b23;
+  --p-red-300: #a32b23;
+  --p-amber-600: #6b4a00;
+  --p-amber-500: #6b4a00;
+  --p-amber-300: #6b4a00;
+  --p-green-600: #14663c;
+  --p-green-500: #14663c;
+  --p-green-300: #14663c;
+  --border-faint: rgb(211 219 228 / 0.8);
+  --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.9);
+  --accent-soft: rgb(27 94 140 / 0.1);
+  --accent-border: rgb(27 94 140 / 0.35);
+  --accent-row: rgb(27 94 140 / 0.07);
+  --danger-border: rgb(178 58 49 / 0.4);
+  --danger-border-solid: rgb(178 58 49 / 0.45);
+  --danger-soft: rgb(178 58 49 / 0.08);
+  --danger-on: #fdf5f4;
+  --danger-text: #a32b23;
   --danger-surface: #fdf0ef;
-  --warn-border: rgb(125 88 0 / 0.35);
-  --warn-border-solid: rgb(125 88 0 / 0.4);
+  --warn-border: rgb(107 74 0 / 0.35);
+  --warn-border-solid: rgb(107 74 0 / 0.4);
   --warn-soft: rgb(125 88 0 / 0.08);
-  --warn-text: #7d5800;
-  --good-border: rgb(31 107 66 / 0.35);
-  --good-border-solid: rgb(31 107 66 / 0.4);
+  --warn-text: #6b4a00;
+  --good-border: rgb(20 102 60 / 0.35);
+  --good-border-solid: rgb(20 102 60 / 0.4);
   --good-soft: rgb(31 107 66 / 0.08);
-  --good-text: #1f6b42;
+  --good-text: #14663c;
   --good-surface: #eef7f1;
   --scrim: rgb(23 32 44 / 0.4);
-  --scrim-strong: rgb(23 32 44 / 0.55);
   /* 浅色下的阴影要更淡、更散：深色阴影在浅底上会显脏 */
   --shadow-1: 0 1px 2px rgb(31 45 65 / 0.08);
-  --shadow-2: 0 4px 12px rgb(31 45 65 / 0.1);
-  --shadow-3: 0 12px 30px rgb(31 45 65 / 0.12);
-  --shadow-4: 0 24px 60px rgb(31 45 65 / 0.16);
-  --shadow-drawer: -18px 0 40px rgb(31 45 65 / 0.12);
-  --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.8);
-  --focus-ring: #1f5c8f;
+  --shadow-2: 0 8px 24px rgb(31 45 65 / 0.12);
+  --shadow-3: 0 24px 60px rgb(31 45 65 / 0.18);
+  --focus-ring: #1b5e8c;
+  --row-hover: var(--p-ink-850);
+  --rail-bg: #eef1f6;      /* 浅色下导航栏比内容略深：同样是"外壳"的意思 */
   --log-bg: var(--p-ink-1000);
-  --topbar-tint: rgb(31 92 143 / 0.05);
+  --topbar-tint: rgb(27 94 140 / 0.04);
   /* 浅底上的噪点像屏幕脏了，直接关掉 */
   --grain-opacity: 0;
   --pending-opacity: 0.82;
