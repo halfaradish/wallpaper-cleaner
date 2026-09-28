@@ -1,75 +1,81 @@
-// 提示条：可以同时存在多条
+// Toast：一次性的、不需要用户回应的提示
 //
-// 以前是单个元素，后来的消息直接覆盖前一条——一次任务里"已提交但未确认生效"
-// 和"跳过 2 张"是两条独立的信息，前者会被后者吃掉。现在每条一个节点、各自计时。
-//
-// live 语义挂在每条自己身上：普通提示 role=status（等当前朗读完再说），
-// 错误 role=alert（立刻打断）。容器不挂 aria-live，避免嵌套播报两遍。
-import { $ } from '../core/dom.js';
+// 三条规矩：
+// - 最多同时 4 条，超出时挤掉最旧的一条。堆满屏幕的 Toast 等于没有提示。
+// - 错误用 role="alert"（会被立刻播报），其余用 role="status"（等当前朗读结束）。
+// - 鼠标悬停或键盘聚焦时暂停倒计时：正在读的那条不该在读一半时消失。
+import { $, h, setText } from '../core/dom.js';
 
-const LIMIT = 4;               // 同时最多几条，超出就把最早的收掉
-const DURATION = { error: 8000, ok: 4000, '': 4000 };
-const EXIT_MS = 400;           // 退场动画的兜底时长
-
-function dismiss(el) {
-  if (!el.isConnected || el.classList.contains('leaving')) return;
-  el.classList.add('leaving');
-  let done = false;
-  const remove = () => {
-    if (done) return;
-    done = true;
-    el.remove();
-  };
-  el.addEventListener('animationend', remove, { once: true });
-  // 兜底：动画被 prefers-reduced-motion 或强制颜色模式关掉时 animationend 不一定来
-  setTimeout(remove, EXIT_MS);
-}
+const LIMIT = 4;
+const DURATION = { error: 8000, ok: 4000, info: 4000 };
+const EXIT_FALLBACK_MS = 400;
 
 export function toast(message, kind) {
-  const host = $('toasts');
-  if (!host) return;
+  const box = $('toasts');
+  if (!box) return;
 
-  const el = document.createElement('div');
-  el.className = `toast${kind ? ` ${kind}` : ''}`;
-  el.setAttribute('role', kind === 'error' ? 'alert' : 'status');
+  const type = kind === 'error' || kind === 'ok' ? kind : 'info';
+  const text = h('span', { class: 'toast-text', text: message });
+  const close = h('button', {
+    class: 'toast-close',
+    type: 'button',
+    'aria-label': '关闭提示',
+    text: '✕',
+    on: { click: () => dismiss(el) },
+  });
+  const el = h('div', {
+    class: `toast ${type}`,
+    role: type === 'error' ? 'alert' : 'status',
+  }, [text, close]);
 
-  const text = document.createElement('span');
-  text.className = 'toast-text';
-  text.textContent = message;
+  box.append(el);
+  while (box.children.length > LIMIT) dismiss(box.firstElementChild, true);
 
-  const close = document.createElement('button');
-  close.type = 'button';
-  close.className = 'toast-close';
-  close.setAttribute('aria-label', '关闭这条提示');
-  close.textContent = '✕';
+  let remaining = DURATION[type];
+  let startedAt = Date.now();
+  let timer = setTimeout(() => dismiss(el), remaining);
 
-  el.append(text, close);
-  host.appendChild(el);
-
-  while (host.children.length > LIMIT) dismiss(host.firstElementChild);
-
-  // 计时在悬停/聚焦时暂停：鼠标移上去往往正是要读它，这时消失最恼人
-  let timer = null;
-  let remaining = DURATION[kind] || DURATION[''];
-  let startedAt = 0;
-
-  const resume = () => {
-    if (remaining <= 0) return;
-    startedAt = Date.now();
-    timer = setTimeout(() => dismiss(el), remaining);
-  };
   const pause = () => {
-    if (timer === null) return;
     clearTimeout(timer);
-    timer = null;
     remaining -= Date.now() - startedAt;
+  };
+  const resume = () => {
+    startedAt = Date.now();
+    clearTimeout(timer);
+    timer = setTimeout(() => dismiss(el), Math.max(600, remaining));
   };
 
   el.addEventListener('mouseenter', pause);
   el.addEventListener('mouseleave', resume);
   el.addEventListener('focusin', pause);
   el.addEventListener('focusout', resume);
-  close.addEventListener('click', () => dismiss(el));
+}
 
-  resume();
+function dismiss(el, immediate) {
+  if (!el || el.dataset.leaving) return;
+  el.dataset.leaving = '1';
+  if (immediate) {
+    el.remove();
+    return;
+  }
+  let done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    el.remove();
+  };
+  el.addEventListener('animationend', finish, { once: true });
+  el.classList.add('leaving');
+  // 动画被 reduced-motion 压掉时 animationend 仍会触发，但事件偶尔会丢，留个兜底
+  setTimeout(finish, EXIT_FALLBACK_MS);
+}
+
+export function clearToasts() {
+  const box = $('toasts');
+  if (box) box.textContent = '';
+}
+
+// 供无障碍场景使用：把提示同步写进状态栏，屏幕阅读器之外的用户也看得到结论
+export function toastIntoStatusBar(message) {
+  setText($('status-text'), message);
 }

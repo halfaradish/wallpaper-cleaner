@@ -1,7 +1,7 @@
 // 定时器按名字统一管理
 //
-// 原先五个 timer（任务轮询 / Steam 探测 / 检查更新 / 日志刷新 / 进度条延时）各自
-// 挂在 state 上，谁开的、什么时候该停全靠调用方记得。改成具名注册表后：
+// 五个 timer（任务轮询 / Steam 探测 / 检查更新 / 日志刷新 / 进度条延时）如果各自
+// 挂在 state 上，谁开的、什么时候该停全靠调用方记得。具名注册表解决两件事：
 // 同名再开自动顶掉前一个（不会出现两个轮询同时跑），也能一次清干净。
 //
 // 周期性定时器还会跟着窗口可见性走：桌面窗口最小化、或浏览器切到别的标签页时
@@ -42,11 +42,24 @@ export function setTimer(name, fn, delay) {
   timers.set(name, entry);
 }
 
-// 周期性：要停就 clearTimer(name)
-export function setRepeating(name, fn, delay) {
+/**
+ * 周期性：要停就 clearTimer(name)
+ *
+ * pauseWhenHidden 默认 true，适用于"没人看就别问"的轮询（Steam 状态、日志刷新）。
+ * 但任务轮询必须传 false：用户点下清理之后把窗口最小化，回来时看到的不该是一个
+ * 还停在"正在清理"的界面——那次操作早就结束了，只是没人去取结果。省这点 CPU
+ * 换来的是界面在说谎，不值得。
+ */
+export function setRepeating(name, fn, delay, options) {
   clearTimer(name);
-  const entry = { id: null, fn, delay, repeating: true };
-  if (!isHidden()) entry.id = setInterval(fn, delay);
+  const entry = {
+    id: null,
+    fn,
+    delay,
+    repeating: true,
+    pauseWhenHidden: !options || options.pauseWhenHidden !== false,
+  };
+  if (!isHidden() || !entry.pauseWhenHidden) entry.id = setInterval(fn, delay);
   timers.set(name, entry);
 }
 
@@ -57,7 +70,7 @@ function isHidden() {
 if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', () => {
     timers.forEach((entry) => {
-      if (!entry.repeating) return;
+      if (!entry.repeating || !entry.pauseWhenHidden) return;
       if (document.hidden) {
         cancel(entry);
       } else if (entry.id === null) {

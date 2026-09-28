@@ -1,35 +1,44 @@
-// 组合式空状态
+// 空状态：表格里没有东西可显示时，说清楚"为什么没有"和"接下来能做什么"
 //
-// 原先空状态就是一句灰字（"没有待清理的文件夹。"），看起来像出了故障。
-// 现在给三样东西：一个图标表明状态、一句说明讲清为什么、一个出口告诉用户能做什么。
-// 图标一律内联 SVG，跟着 currentColor 走，不引图标库也不引图片文件。
+// 空着不说话的表格是最让人困惑的状态——它和"还没扫"、"扫了但没结果"、
+// "筛掉了"看起来一模一样，而这三种情况该做的事完全不同。
+import { h, svg } from '../core/dom.js';
 
+// 图标同一家族、同一 stroke-width。CSP 决定了引不进图标库，所以只能内联
+// （这是对设计规范里"用图标库"那条的刻意偏离，原因写在这里）。
 const ICONS = {
-  // 放大镜：还没有结果
-  scan: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21"/>',
-  // 对勾：没有可做的
-  clean: '<path d="M4 12.5 9.5 18 20 6.5"/>',
-  // 带斜杠的放大镜：筛选没命中
-  nomatch: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21"/><path d="M8 13 13 8"/>',
-  // 纸飞机/箭头：等待下载
-  download: '<path d="M12 3v12"/><path d="M7.5 10.5 12 15l4.5-4.5"/><path d="M4 19h16"/>',
+  scan: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+    stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <circle cx="11" cy="11" r="7"/><path d="M20 20l-3.6-3.6"/><path d="M11 8v6M8 11h6"/></svg>`,
+  clean: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+    stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M4 20l7.5-7.5"/><path d="M11.5 12.5L18 6a2.1 2.1 0 0 1 3 3l-6.5 6.5z"/>
+    <path d="M5 15l4 4"/><path d="M15 3.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/></svg>`,
+  nomatch: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+    stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <circle cx="11" cy="11" r="7"/><path d="M20 20l-3.6-3.6"/><path d="M8.5 11h5"/></svg>`,
+  download: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+    stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M12 3v11"/><path d="M7.5 10L12 14.5 16.5 10"/><path d="M4 18.5h16"/></svg>`,
 };
 
-function icon(name) {
-  const body = ICONS[name] || ICONS.scan;
-  return `<svg class="empty-icon" viewBox="0 0 24 24" aria-hidden="true">${body}</svg>`;
-}
-
 /**
- * 生成空状态的 HTML。
- * action 传了才出按钮，按钮带 data-action，由 main.js 统一委托处理
- * （视图模块之间不互相引用，避免循环依赖）。
+ * action 是 data-action 的值，由 main.js 的委托处理器接住；
+ * 传了就渲染一个按钮，没传就只是说明。
  */
-export function emptyMarkup(options) {
-  const o = options || {};
-  const desc = o.desc ? `<p class="empty-desc">${o.desc}</p>` : '';
-  const action = o.action
-    ? `<button type="button" class="btn ghost" data-action="${o.action}">${o.actionLabel}</button>`
-    : '';
-  return `${icon(o.icon)}<p class="empty-title">${o.title}</p>${desc}${action}`;
+export function renderEmpty(container, config) {
+  if (!container) return;
+  container.textContent = '';
+  const parts = [h('div', { class: 'empty-icon' }, svg(ICONS[config.icon] || ICONS.scan))];
+  parts.push(h('p', { class: 'empty-title', text: config.title }));
+  if (config.desc) parts.push(h('p', { class: 'empty-desc', text: config.desc }));
+  if (config.action && config.actionLabel) {
+    parts.push(h('button', {
+      class: 'btn ghost',
+      type: 'button',
+      dataset: { action: config.action },
+      text: config.actionLabel,
+    }));
+  }
+  container.append(...parts);
 }

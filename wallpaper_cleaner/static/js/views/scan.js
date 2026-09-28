@@ -1,71 +1,79 @@
-// 扫描：打开面板自动跑一次，也可以手动点「重新扫描」
+// 扫描：打开面板时自动跑一次，也是所有数据更新的唯一入口
+//
+// 扫描是非破坏性的、而且很常发生（每次打开面板都会跑），所以它走状态栏那条细进度线，
+// 不弹模态。只有破坏性操作才配得上挡住整个界面。
 import { api } from '../core/api.js';
-import { state, loadState, setBusy } from '../core/store.js';
+import { state, setBusy, loadState } from '../core/store.js';
 import { pollJob, waitUntilIdle } from '../core/job.js';
-import { scheduleTaskbar, clearProgress } from '../ui/progress.js';
-import { scheduleSkeleton, clearSkeleton } from '../ui/skeleton.js';
-import { fmtSize } from '../core/format.js';
+import { clearProgress, scheduleStatus } from '../ui/progress.js';
+import { clearSkeleton, scheduleSkeleton } from '../ui/skeleton.js';
 import { toast } from '../ui/toast.js';
 import { selectAllOrphans } from './orphans.js';
+import { renderNotice } from './shell.js';
 
-export const SCAN_REUSE_MS = 60000; // 服务端的扫描结果超过这个时间就重新扫，别拿几分钟前的状态糊弄人
+// 一分钟内扫过的结果直接复用：频繁切窗口、刷新页面时没必要反复读盘
+export const SCAN_REUSE_MS = 60000;
 
 export function scanAgeMs(scan) {
-  // scanned_at 是本地时间的 'YYYY-MM-DD HH:MM:SS'，解析不了就当过期处理
   if (!scan || !scan.scanned_at) return Infinity;
-  const parsed = Date.parse(String(scan.scanned_at).replace(' ', 'T'));
+  // 后端给的是本地时间字符串（YYYY-MM-DD HH:MM:SS），没有时区信息，
+  // 用同样的格式解析才能得到正确的差值
+  const parsed = Date.parse(scan.scanned_at.replace(' ', 'T'));
   return Number.isNaN(parsed) ? Infinity : Date.now() - parsed;
 }
 
 export async function startScan(options) {
   const opts = options || {};
   if (state.busy) return;
-  setBusy(true);
 
-  // 扫描走顶栏内联条而不是全屏模态：打开面板会自动扫一遍，每次都挡住整页太重。
-  // 扫得快就不显示，免得进度条闪一下反而让人以为出错。
-  scheduleTaskbar('正在检查壁纸文件夹');
-  // 还没有数据时先把表格的形状铺出来（延迟 300ms，扫得快就看不到）
-  scheduleSkeleton();
+  // 骨架屏由两个视图自己在忙碌态里画：它们才知道自己现在有没有数据，
+  // 而"已经有数据"时再叠一层骨架屏是退步
+  setBusy(true);
+  scheduleStatus('正在检查壁纸文件夹');
 
   let jobId;
   try {
     const data = await api('/api/scan', { body: {} });
     jobId = data.job_id;
   } catch (e) {
+    clearSkeleton('orphan-body');
+    clearSkeleton('sub-body');
     clearProgress();
-    clearSkeleton();
+    setBusy(false);
+    // 提交失败最常见的原因是另一个窗口正在扫（后端同一时刻只跑一个任务）。
+    // 自动扫描遇到这种情况不该报错，等它扫完直接读结果就好
     if (opts.auto) {
-      // 多半是另一个窗口正在扫描：等它结束，直接读它的结果
       await waitUntilIdle();
-      await loadState();
-      selectAllOrphans();
-      setBusy(false);
+      try {
+        await loadState();
+        selectAllOrphans();
+      } catch (ignored) { /* 连不上时由连接横幅负责说明 */ }
       return;
     }
-    setBusy(false);
     toast(e.message, 'error');
     return;
   }
 
   pollJob(jobId, async (job) => {
-    // 数据马上到位，撤掉骨架并清掉待铺的定时器
-    clearSkeleton();
+    clearSkeleton('orphan-body');
+    clearSkeleton('sub-body');
     await loadState();
-    // 自动检查完就把可清理的选好，用户不必自己去勾
+    const result = job.result || {};
     selectAllOrphans();
-
-    if (opts.silent) return;
-    const result = job.result;
-    if (!result) return;
-    const cleanable = result.orphans.length + result.unknown.length;
-    const freed = (Number(result.orphan_usage_bytes) || Number(result.orphan_bytes) || 0)
-      + (Number(result.unknown_usage_bytes) || Number(result.unknown_bytes) || 0);
-    toast(
-      cleanable
-        ? `扫描完成：待清理 ${cleanable} 个，可释放 ${fmtSize(freed)}`
-        : '扫描完成：没有需要清理的内容',
-      cleanable ? '' : 'ok',
-    );
+    if (!opts.silent) {
+      const cleanable = (result.orphans || []).length + (result.unknown || []).length;
+      toast(
+        cleanable
+          ? `扫描完成：${result.total_folders || 0} 个文件夹，其中 ${cleanable} 项待清理`
+          : `扫描完成：${result.total_folders || 0} 个文件夹，没有待清理的残留`,
+        'ok',
+      );
+    }
+  }, () => {
+    renderNotice();
+  }, (message) => {
+    clearSkeleton('orphan-body');
+    clearSkeleton('sub-body');
+    toast(message, 'error');
   });
 }

@@ -1,7 +1,7 @@
 // 任务引擎：长操作（扫描 / 清理 / 取消订阅 / 重新订阅）的统一轮询
 //
 // 后端同一时刻只跑一个任务，提交后拿 job_id，这里按 400ms 轮询它的进度。
-// 进度弹窗延迟 400ms 才打开（见 ui/progress.js）：任务很快时不要闪一下。
+// 进度落到哪儿由 ui/progress.js 决定（状态栏还是弹窗），这里只负责喂数据与收尾。
 import { api } from './api.js';
 import { loadState, setBusy } from './store.js';
 import { clearTimer, setRepeating } from './poll.js';
@@ -13,9 +13,9 @@ export function stopPolling() {
 }
 
 /**
- * onDone(job)     任务成功后的收尾（刷新状态、呈现结果）
- * onSettled(job)  等忙碌标记清掉之后才跑：它触发的任务会被 startScan 开头的
- *                 if (state.busy) return 直接吞掉，所以顺序不能提前
+ * onDone(job)      任务成功后的收尾（刷新状态、呈现结果）
+ * onSettled(job)   等忙碌标记清掉之后才跑：它触发的任务会被 startScan 开头的
+ *                  if (state.busy) return 直接吞掉，所以顺序不能提前
  * onError(message) 任务失败时的呈现方式（Steam 相关的失败要弹引导弹窗，而不是一句 toast）
  */
 export function pollJob(jobId, onDone, onSettled, onError) {
@@ -52,7 +52,9 @@ export function pollJob(jobId, onDone, onSettled, onError) {
       setBusy(false);
     }
     if (onSettled) onSettled(job);
-  }, 400);
+    // pauseWhenHidden: false —— 任务轮询是唯一"用户看不见时也不能停"的轮询：
+    // 窗口最小化期间任务照样在跑，停下来只会让界面在恢复时显示一个早已过期的状态
+  }, 400, { pauseWhenHidden: false });
 }
 
 // 另一个窗口正在扫描时，等它结束再读结果，别抢同一个任务槽

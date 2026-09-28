@@ -2,6 +2,7 @@
 
 const HEX = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 
+// 只在确实要拼 HTML 字符串的地方用（目前只剩内联图标），用户数据一律走 textContent
 export function esc(value) {
   return String(value === null || value === undefined ? '' : value)
     .replace(/[&<>"']/g, (c) => HEX[c]);
@@ -36,13 +37,23 @@ export function dirname(path) {
 }
 
 // 取不到标题的行（目录里没有 project.json）显示占位文字而不是空白：
-// 内容被 Steam 清理过的残留本来就只剩一串 ID，能不能打开目录不该由标题决定
-export const NO_TITLE = ['—', '未知'];
+// 内容被 Steam 清理过的残留本来就只剩一串 ID，能不能打开目录不该由标题决定。
+// 注意这里没有用破折号当占位符：一个字符的占位符在中文界面里既不像"没有值"，
+// 也读不出来，用文字更清楚。
+export const NO_TITLE = ['未知', ''];
 export const NO_TITLE_TEXT = '打开目录';
 export const NO_TITLE_HINT = '这个文件夹里没有 project.json（内容可能已被 Steam 清理），点这里打开目录';
 
+export function hasTitle(item) {
+  return !NO_TITLE.includes(item.title);
+}
+
+export function displayTitle(item) {
+  return hasTitle(item) ? item.title : NO_TITLE_TEXT;
+}
+
 // 确认框里逐条列出的名字：这两张表都可能取不到标题，标一下免得只剩一串 ID
 export function confirmLabel(item) {
-  const name = item.title ? ` · ${esc(item.title)}` : '';
-  return `${esc(item.wid)}${name}${item.content_missing ? '（内容已缺失）' : ''}`;
+  const name = hasTitle(item) ? ` · ${item.title}` : '';
+  return `${item.wid}${name}${item.content_missing ? '（内容已缺失）' : ''}`;
 }

@@ -1,28 +1,41 @@
-// 放大看预览图（GIF 在这里也是动的）
-import { $, show, hide, isHidden } from '../core/dom.js';
+// 图片灯箱：点缩略图放大看原图
+//
+// 用委托而不是逐行绑定：表格每次重绘都会换掉全部行，逐行绑定要么漏要么重。
+import { $, hide, show } from '../core/dom.js';
 
 export function openLightbox(src) {
-  $('lightbox-img').src = src;
-  show($('lightbox'));
+  const box = $('lightbox');
+  const img = $('lightbox-img');
+  if (!box || !img) return;
+  img.src = src;
+  show(box);
 }
 
 export function closeLightbox() {
   const box = $('lightbox');
-  // 已经关掉就别再动 src：重绘时把 src 摘掉会让正在解码的图白跑一趟
-  if (isHidden(box)) return;
+  const img = $('lightbox-img');
+  if (!box || box.classList.contains('hidden')) return;
   hide(box);
-  $('lightbox-img').removeAttribute('src');
+  // 清掉 src，否则 gif 会在隐藏后继续解码播放
+  if (img) img.removeAttribute('src');
+}
+
+export function isLightboxOpen() {
+  const box = $('lightbox');
+  return !!box && !box.classList.contains('hidden');
 }
 
 export function initLightbox() {
-  document.addEventListener('click', (e) => {
-    const target = e.target;
-    // 缩略图外面套了 <button>（键盘可达），鼠标点图会冒泡到它，所以只认这一个入口
-    const trigger = target && target.closest ? target.closest('[data-thumb-src]') : null;
+  const box = $('lightbox');
+  if (!box) return;
+
+  document.addEventListener('click', (event) => {
+    const trigger = event.target.closest('[data-thumb-src]');
     if (trigger) {
       openLightbox(trigger.dataset.thumbSrc);
-    } else if (target === $('lightbox') || target === $('lightbox-img')) {
-      closeLightbox();
+      return;
     }
+    // 点遮罩或图片本身都关：这里只有一张图，没有别的可点的地方
+    if (event.target === box || event.target.id === 'lightbox-img') closeLightbox();
   });
 }

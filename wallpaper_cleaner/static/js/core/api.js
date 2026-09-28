@@ -1,10 +1,10 @@
 // 与后端的唯一出口：统一带 token、统一把错误归一成 Error(message)、统一上报连接状态
 //
-// 两件以前没做的事：
+// 两件不能省的事：
 // 1. 超时。fetch 默认不超时，后端卡住时请求会一直挂着，界面看起来只是"没反应"。
-// 2. 连接状态。以前后端重启之后，所有轮询都在 catch 里静默 return，
-//    界面永远停在旧数据上，既不报错也不恢复。现在网络层失败会广播出去，
-//    由 ui/connection.js 挂出横幅并自动重连。
+// 2. 连接状态。后端重启之后，所有轮询都在 catch 里静默 return 的话，界面会永远停在
+//    旧数据上，既不报错也不恢复。网络层失败必须广播出去，由 ui/connection.js
+//    挂出横幅并自动重连。
 import { PANEL_TOKEN } from './config.js';
 
 const TIMEOUT_MS = 10000;
@@ -28,7 +28,7 @@ function setDown(next, error) {
 
 // 面板 token 是每次运行现生成的，所以后端一重启，这个页面手里的 token 就作废了：
 // 读接口还能用（它们不要 token），写接口一律 403。这种"看起来连上了、其实一写就失败"
-// 的状态必须明确说出来，并且只有刷新页面能解决（新 token 只在新页面里）。
+// 的状态必须明确说出来，而且只有刷新页面能解决（新 token 只在新页面里）。
 const staleListeners = [];
 let tokenStale = false;
 

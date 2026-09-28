@@ -1,66 +1,37 @@
 // 骨架屏：首屏扫描期间先把表格的形状占住
 //
-// 原先是"尚未扫描。"一句灰字，扫完之后整张表突然长出来，页面高度会跳一下。
-// 骨架屏保持表格的形状（同样的列数、同样的行高），内容到位时只是把占位换掉。
-//
-// 只在"本来就没有数据"时铺骨架：已经有上次的扫描结果时保持旧数据，
-// 重扫时把表闪成骨架比看着旧数据更糟。
-//
-// 延迟 300ms 才铺：这个工具的扫描通常不到一秒，立即铺骨架等于闪一下，
-// 和它要解决的问题一样烦人。
-import { $, show, hide } from '../core/dom.js';
-import { setTimer, clearTimer } from '../core/poll.js';
+// 只在"还没有任何数据"时出现。已经有数据时再换成骨架屏是退步——用户宁可看旧数据，
+// 也不想看一堆灰条。占位块的宽度按各列真实内容的形状给，数据到达时不会跳一下。
+import { $, h } from '../core/dom.js';
+import { clearTimer, setTimer } from '../core/poll.js';
 
 const ROW_COUNT = 4;
-const DELAY = 300;
+const DELAY = 300;   // 300ms 内就出数据的话，闪一下骨架屏反而更糟
 
-// 列宽必须和真表格对得上，否则换内容时照样跳
-const COLUMNS = {
-  'orphan-body': [
-    'col-check', 'col-thumb', '', '', 'col-kind', 'col-size col-declared', 'col-size col-usage',
-  ],
-  'sub-body': [
-    'col-check', 'col-thumb', '', '', 'col-size col-declared', 'col-size col-usage',
-  ],
+const LAYOUTS = {
+  'orphan-body': ['col-check', 'col-thumb', 'col-id', 'title-cell', 'col-kind', 'col-size col-declared', 'col-size'],
+  'sub-body': ['col-check', 'col-thumb', 'col-id', 'title-cell', 'col-size col-declared', 'col-size'],
 };
 
-function hasRealData(tbodyId) {
-  const body = $(tbodyId);
-  if (!body) return false;
-  return body.children.length > 0 && !body.querySelector('.skeleton-row');
+function buildRow(columns) {
+  return h('tr', { class: 'skeleton-row' }, columns.map((cls) => (
+    h('td', { class: cls }, h('div', { class: 'skeleton' }))
+  )));
 }
 
-function fill(tbodyId) {
-  const body = $(tbodyId);
-  if (!body || hasRealData(tbodyId)) return;
-  const columns = COLUMNS[tbodyId] || [];
-  body.innerHTML = Array.from({ length: ROW_COUNT }, () => (
-    `<tr class="skeleton-row" aria-hidden="true">${columns.map((cls) =>
-      `<td class="${cls}"><span class="skeleton"></span></td>`).join('')}</tr>`
-  )).join('');
-  if (tbodyId === 'orphan-body') {
-    show($('orphan-wrap'));
-    hide($('orphan-empty'));
-  }
-}
-
-function empty(tbodyId) {
-  const body = $(tbodyId);
-  if (body && body.querySelector('.skeleton-row')) body.innerHTML = '';
-}
-
-// 扫描开始：等一小会儿再铺，扫得快就当没这回事
-export function scheduleSkeleton() {
-  clearTimer('skeleton');
-  setTimer('skeleton', () => {
-    fill('orphan-body');
-    fill('sub-body');
+export function scheduleSkeleton(tbodyId) {
+  const columns = LAYOUTS[tbodyId];
+  if (!columns) return;
+  setTimer(`skeleton-${tbodyId}`, () => {
+    const tbody = $(tbodyId);
+    // 已经有行就不画了：迟到的骨架屏比没有骨架屏更让人困惑
+    if (!tbody || tbody.children.length) return;
+    tbody.append(...Array.from({ length: ROW_COUNT }, () => buildRow(columns)));
   }, DELAY);
 }
 
-// 数据到位（或扫描失败）：撤掉待铺的定时器并清掉已有的骨架行
-export function clearSkeleton() {
-  clearTimer('skeleton');
-  empty('orphan-body');
-  empty('sub-body');
+export function clearSkeleton(tbodyId) {
+  clearTimer(`skeleton-${tbodyId}`);
+  const tbody = $(tbodyId);
+  if (tbody) tbody.textContent = '';
 }
