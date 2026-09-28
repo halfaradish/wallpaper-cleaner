@@ -127,12 +127,29 @@ DEFAULT_THEME = 'auto'
 RAILS = ('expanded', 'collapsed')
 DEFAULT_RAIL = 'expanded'
 
+# 界面缩放级别（百分比整数）。存服务端而非 localStorage 的原因同上；取值上限
+# 压在 160 的原因见 static/js/ui/zoom.js——再大固定 px 尺寸的图标控件就明显失衡
+ZOOM_MIN, ZOOM_MAX = 70, 160
+DEFAULT_ZOOM = 100
+
+
+def _valid_zoom(value):
+    """缩放偏好校验：必须是区间内的整数。bool 是 int 的子类，要排掉"""
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and ZOOM_MIN <= value <= ZOOM_MAX
+    )
+
+
 # 界面偏好里每一项的合法取值与中文名。POST /api/prefs 按它逐个校验，
-# 顺带也就定义了"哪些键是认识的"。中文名是给报错用的：错误信息会直接显示给用户，
-# 里面出现 'theme' 这种字段名等于没说
+# 顺带也就定义了"哪些键是认识的"。取值可以是枚举集合（逐个比对），也可以是
+# 返回布尔值的校验函数（zoom 这类连续值用）。中文名是给报错用的：错误信息会
+# 直接显示给用户，里面出现 'theme' 这种字段名等于没说
 PREF_KEYS = {
     'theme': (THEMES, '主题'),
     'rail': (RAILS, '导航栏'),
+    'zoom': (_valid_zoom, '缩放'),
 }
 
 
@@ -1182,12 +1199,18 @@ class PanelHandler(BaseHTTPRequestHandler):
         rail = core.load_prefs().get('rail')
         return rail if rail in RAILS else DEFAULT_RAIL
 
+    def _stored_zoom(self):
+        """存下来的缩放级别（百分比整数）；认不出来的一律当 100"""
+        zoom = core.load_prefs().get('zoom')
+        return zoom if _valid_zoom(zoom) else DEFAULT_ZOOM
+
     def _get_prefs(self):
         self._send_json({
             'theme': self._stored_theme(),
             'themes': list(THEMES),
             'rail': self._stored_rail(),
             'rails': list(RAILS),
+            'zoom': self._stored_zoom(),
         })
 
     def _post_prefs(self, body):
@@ -1205,7 +1228,8 @@ class PanelHandler(BaseHTTPRequestHandler):
             if key not in body:
                 continue
             value = body[key]
-            if value not in allowed:
+            ok = allowed(value) if callable(allowed) else value in allowed
+            if not ok:
                 return self._send_json({'error': f'未知的{label}设置: {value!r}'}, 400)
             updated[key] = value
 
@@ -1233,8 +1257,10 @@ class PanelHandler(BaseHTTPRequestHandler):
         html = html.replace('__PANEL_TOKEN_VALUE__', self.server.state.token)
         html = html.replace('__PANEL_VERSION_VALUE__', __version__)
         # 主题也在这里注入：等页面加载完再问一次接口的话，用户选了深色而系统是浅色时
-        # 会先闪一下浅色。写进第一帧就没有这个问题。
+        # 会先闪一下浅色。写进第一帧就没有这个问题。缩放同理（zoom-boot.js 读它），
+        # 不然页面会先按 100% 画一遍再跳到实际级别。
         html = html.replace('__PANEL_THEME_VALUE__', self._stored_theme())
+        html = html.replace('__PANEL_ZOOM_VALUE__', str(self._stored_zoom()))
         # 页面本身每次都要现取（内嵌 token），不能缓存；CSP 只给文档，资源响应不需要
         self._send_bytes(
             html.encode('utf-8'),

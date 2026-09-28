@@ -12,6 +12,7 @@ import { openProgressDialog } from './ui/progress.js';
 import { initConnection, reconnectNow, reloadPage } from './ui/connection.js';
 import { closeLightbox, initLightbox, isLightboxOpen } from './ui/lightbox.js';
 import { initTheme } from './ui/theme.js';
+import { initZoom } from './ui/zoom.js';
 import { initTitleLinks, initThumbFallback } from './views/table.js';
 import { initNav, switchView } from './views/nav.js';
 import { initShell } from './views/shell.js';
@@ -84,6 +85,7 @@ async function bootstrap() {
   // 先登记回调，再 loadState —— 反过来的话第一次渲染不会发生
   initConnection();
   initTheme();
+  initZoom();
   initDialogRegistry();
   initBusy();
   initShell();

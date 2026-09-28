@@ -161,6 +161,33 @@ class TestPrefsEndpoint(PrefsEndpointTestCase):
         self.assertEqual(status, 400)
         self.assertIn('界面偏好', body['error'])
 
+    def test_zoom_defaults_to_100(self):
+        status, body = self.get('/api/prefs')
+        self.assertEqual(status, 200)
+        self.assertEqual(body['zoom'], 100)
+
+    def test_zoom_saves_without_touching_theme(self):
+        self.post('/api/prefs', {'theme': 'dark'}, token=self.state.token)
+        status, body = self.post('/api/prefs', {'zoom': 130}, token=self.state.token)
+        self.assertEqual(status, 200)
+        self.assertEqual(body['zoom'], 130)
+        self.assertEqual(self.read_prefs(), {'theme': 'dark', 'zoom': 130})
+
+    def test_rejects_an_out_of_range_zoom(self):
+        for pct in (69, 161, 500, -100):
+            status, body = self.post('/api/prefs', {'zoom': pct}, token=self.state.token)
+            self.assertEqual(status, 400, pct)
+            self.assertIn('缩放', body['error'], pct)
+        # 被拒之后不该留下任何东西
+        self.assertFalse(os.path.exists(self.prefs_file()))
+
+    def test_rejects_a_non_integer_zoom(self):
+        """缩放必须是整数百分比：小数、字符串、布尔都拒掉（bool 是 int 的子类）"""
+        for value in (1.5, '110', True, None):
+            status, body = self.post('/api/prefs', {'zoom': value}, token=self.state.token)
+            self.assertEqual(status, 400, value)
+            self.assertIn('缩放', body['error'], value)
+
     def test_requires_the_panel_token(self):
         status, _body = self.post('/api/prefs', {'theme': 'dark'})
         self.assertEqual(status, 403)
@@ -248,6 +275,33 @@ class TestThemeInjection(PrefsEndpointTestCase):
         self.write_prefs('{"theme": "rainbow"}')
         html = self.fetch_index()
         self.assertIn('data-theme="auto"', html)
+
+
+class TestZoomInjection(PrefsEndpointTestCase):
+    """缩放级别也要进第一帧（zoom-boot.js 读它），不然页面会先按 100% 画一遍再跳档"""
+
+    def fetch_index(self):
+        request = urllib.request.Request(f'http://127.0.0.1:{self.port}/')
+        with urllib.request.urlopen(request, timeout=5) as res:
+            return res.read().decode('utf-8')
+
+    def test_default_is_injected(self):
+        html = self.fetch_index()
+        self.assertNotIn('__PANEL_ZOOM_VALUE__', html, '占位符没被替换')
+        self.assertIn('name="panel-zoom" content="100"', html)
+
+    def test_stored_zoom_is_injected(self):
+        self.post('/api/prefs', {'zoom': 130}, token=self.state.token)
+        self.assertIn('name="panel-zoom" content="130"', self.fetch_index())
+
+    def test_an_out_of_range_stored_value_falls_back(self):
+        """手改 prefs.json 塞了个越界值，要退回 100 而不是透给前端"""
+        self.write_prefs('{"zoom": 999}')
+        self.assertIn('name="panel-zoom" content="100"', self.fetch_index())
+
+    def test_a_non_integer_stored_value_falls_back(self):
+        self.write_prefs('{"zoom": "130"}')
+        self.assertIn('name="panel-zoom" content="100"', self.fetch_index())
 
 
 if __name__ == '__main__':

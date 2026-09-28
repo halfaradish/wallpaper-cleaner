@@ -138,7 +138,7 @@ def check_prefs(port, home, html):
 
     request = urllib.request.Request(
         f'http://127.0.0.1:{port}/api/prefs',
-        data=json.dumps({'theme': 'dark'}).encode('utf-8'),
+        data=json.dumps({'theme': 'dark', 'zoom': 110}).encode('utf-8'),
         method='POST',
         headers={'Content-Type': 'application/json', 'X-Panel-Token': token.group(1)},
     )
@@ -153,12 +153,15 @@ def check_prefs(port, home, html):
     if not os.path.exists(prefs_file):
         raise SystemExit(f'[smoke] 失败：界面偏好没有写到 {prefs_file}')
     with open(prefs_file, 'r', encoding='utf-8') as f:
-        if json.load(f).get('theme') != 'dark':
-            raise SystemExit('[smoke] 失败：界面偏好的内容不对')
+        stored = json.load(f)
+    if stored.get('theme') != 'dark' or stored.get('zoom') != 110:
+        raise SystemExit(f'[smoke] 失败：界面偏好的内容不对（{stored}）')
 
     _status, page = fetch(f'http://127.0.0.1:{port}/')
     if 'data-theme="dark"' not in (page or ''):
         raise SystemExit('[smoke] 失败：存下来的主题没有注入首页第一帧')
+    if 'name="panel-zoom" content="110"' not in (page or ''):
+        raise SystemExit('[smoke] 失败：存下来的缩放级别没有注入首页第一帧')
 
 
 def wait_for_panel(port, process, deadline):
