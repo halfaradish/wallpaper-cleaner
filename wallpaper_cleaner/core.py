@@ -31,21 +31,80 @@ def bundle_dir():
     return getattr(sys, '_MEIPASS', PACKAGE_DIR)
 
 
+def dir_is_writable(path):
+    """目录是否真的能写：往里写一个临时文件再删掉
+
+    不能用 os.access(path, os.W_OK)：Windows 上它只检查目录的只读属性，而
+    Program Files 这类目录通常并没有设只读属性，只是当前用户没有写权限——
+    os.access 会给出"可写"的错误答案，然后第一次写配置时才失败。
+    真写一个文件是唯一可靠的判断。
+    """
+    if not os.path.isdir(path):
+        return False
+    # 带上进程号：两个实例同时启动时不会互相踩到对方的探针文件
+    probe = os.path.join(path, f'.wc-write-probe-{os.getpid()}')
+    try:
+        with open(probe, 'w', encoding='ascii') as f:
+            f.write('ok')
+    except OSError:
+        return False
+    try:
+        os.remove(probe)
+    except OSError:
+        pass
+    return True
+
+
+def _appdata_home():
+    base = os.environ.get('APPDATA') or os.path.expanduser('~')
+    return os.path.join(base, 'wallpaper-cleaner')
+
+
+# (目录, 是否退回了 %APPDATA%)，进程内只算一次：可写性探测要真写文件，
+# 不该每次有人问就探一遍
+_home_cache = None
+
+
+def _compute_home():
+    override = os.environ.get('WALLPAPER_CLEANER_HOME')
+    if override:
+        return os.path.abspath(override), False
+    if not is_frozen():
+        return os.path.dirname(PACKAGE_DIR), False
+    # 单文件模式下 sys.executable 是 exe 的真实路径，而 sys._MEIPASS 是随进程
+    # 消失的解压目录——要落盘在旁边，只能用前者
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    if dir_is_writable(exe_dir):
+        return exe_dir, False
+    return _appdata_home(), True
+
+
 def app_home_dir():
     """配置与日志的存放目录
 
     - 源码运行：项目根目录，与旧版一致
-    - 打包运行：%APPDATA%\\wallpaper-cleaner。不能用 exe 所在目录（可能被放进
-      Program Files 而不可写），也不能用解压目录（单文件模式随进程消失）
-    - 可用 WALLPAPER_CLEANER_HOME 环境变量覆盖，便于测试与便携部署
+    - 打包运行：exe 所在目录。便携优先——解压出来的那个文件夹就是它的全部家当，
+      换台机器或想彻底卸载都只是挪动或删掉一个文件夹
+    - exe 目录不可写时（放进 Program Files、只读介质）退回 %APPDATA%\\wallpaper-cleaner，
+      这件事由 home_dir_fallback() 报出来，界面上的「关于」会如实说明
+    - 可用 WALLPAPER_CLEANER_HOME 环境变量覆盖，测试与特殊部署用
     """
-    override = os.environ.get('WALLPAPER_CLEANER_HOME')
-    if override:
-        return os.path.abspath(override)
-    if is_frozen():
-        base = os.environ.get('APPDATA') or os.path.expanduser('~')
-        return os.path.join(base, 'wallpaper-cleaner')
-    return os.path.dirname(PACKAGE_DIR)
+    global _home_cache
+    if _home_cache is None:
+        _home_cache = _compute_home()
+    return _home_cache[0]
+
+
+def home_dir_fallback():
+    """配置目录是不是"exe 旁边写不进去，退回了 %APPDATA%"的结果
+
+    界面上的「关于」用它说明配置到底在哪。用户以为配置在 exe 旁边、实际在别处
+    而没有任何提示，是最容易让人以为"设置没保存"的情形。
+    """
+    global _home_cache
+    if _home_cache is None:
+        _home_cache = _compute_home()
+    return _home_cache[1]
 
 
 def has_console():
