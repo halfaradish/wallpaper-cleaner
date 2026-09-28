@@ -122,6 +122,19 @@ _quiet_request = re.compile(r'^/(favicon\.ico|static/)|^/api/(job/|state|thumb|p
 THEMES = ('auto', 'light', 'dark')
 DEFAULT_THEME = 'auto'
 
+# 导航栏的展开状态。存在服务端的原因和主题一样：桌面模式的端口每次都变，
+# 浏览器的本地存储按来源隔离，只存本地的话打包版每次启动都会忘掉。
+RAILS = ('expanded', 'collapsed')
+DEFAULT_RAIL = 'expanded'
+
+# 界面偏好里每一项的合法取值与中文名。POST /api/prefs 按它逐个校验，
+# 顺带也就定义了"哪些键是认识的"。中文名是给报错用的：错误信息会直接显示给用户，
+# 里面出现 'theme' 这种字段名等于没说
+PREF_KEYS = {
+    'theme': (THEMES, '主题'),
+    'rail': (RAILS, '导航栏'),
+}
+
 
 def _line(level, text):
     return {'level': level, 'text': text, 'time': datetime.now().strftime('%H:%M:%S')}
@@ -1160,21 +1173,49 @@ class PanelHandler(BaseHTTPRequestHandler):
         theme = core.load_prefs().get('theme')
         return theme if theme in THEMES else DEFAULT_THEME
 
+    def _stored_rail(self):
+        """存下来的导航栏状态；认不出来的一律当展开"""
+        rail = core.load_prefs().get('rail')
+        return rail if rail in RAILS else DEFAULT_RAIL
+
     def _get_prefs(self):
-        self._send_json({'theme': self._stored_theme(), 'themes': list(THEMES)})
+        self._send_json({
+            'theme': self._stored_theme(),
+            'themes': list(THEMES),
+            'rail': self._stored_rail(),
+            'rails': list(RAILS),
+        })
 
     def _post_prefs(self, body):
-        theme = body.get('theme')
-        if theme not in THEMES:
-            return self._send_json({'error': f'未知的主题设置: {theme!r}'}, 400)
+        """界面偏好的部分更新：只改提交上来的键
+
+        写的是部分更新而不是整体替换，是因为界面上的每个偏好由不同的模块负责，
+        各自只知道自己的那一项；要求提交完整对象的话，改主题就得顺带把导航栏
+        状态也读一遍再写回去，多一处能写错的地方。
+
+        但"至少要给一个认识的键"这条不能松：一个空对象说明调用方搞错了接口，
+        静默返回 200 会把这个错误藏起来。
+        """
+        updated = {}
+        for key, (allowed, label) in PREF_KEYS.items():
+            if key not in body:
+                continue
+            value = body[key]
+            if value not in allowed:
+                return self._send_json({'error': f'未知的{label}设置: {value!r}'}, 400)
+            updated[key] = value
+
+        if not updated:
+            return self._send_json({'error': '请求里没有可识别的界面偏好设置'}, 400)
+
         prefs = core.load_prefs()
-        prefs['theme'] = theme
+        prefs.update(updated)
         if not core.save_prefs(prefs):
-            # 目录不可写之类。界面已经先把主题换过去了，这里如实说明"存不下来"
+            # 目录不可写之类。界面已经先把改动应用上去了，这里如实说明"存不下来"
             return self._send_json(
-                {'error': f'主题已切换，但存不进去（{core.prefs_path} 不可写）'}, 500
+                {'error': f'改动已生效，但存不进去（{core.prefs_path} 不可写）'}, 500
             )
-        self._send_json({'theme': theme})
+        self._send_json(updated)
 
     # ---------- 静态文件 ----------
 

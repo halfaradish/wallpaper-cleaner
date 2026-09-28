@@ -85,6 +85,13 @@ class PrefsEndpointTestCase(unittest.TestCase):
         with open(core.prefs_path, 'w', encoding='utf-8') as f:
             f.write(text)
 
+    def read_prefs(self):
+        with open(core.prefs_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+
+    def prefs_file(self):
+        return core.prefs_path
+
 
 class TestPrefsEndpoint(PrefsEndpointTestCase):
     def test_defaults_to_auto(self):
@@ -122,6 +129,37 @@ class TestPrefsEndpoint(PrefsEndpointTestCase):
     def test_rejects_a_missing_theme(self):
         status, _body = self.post('/api/prefs', {}, token=self.state.token)
         self.assertEqual(status, 400)
+
+    def test_rail_defaults_to_expanded(self):
+        status, body = self.get('/api/prefs')
+        self.assertEqual(status, 200)
+        self.assertEqual(body['rail'], 'expanded')
+        self.assertEqual(body['rails'], ['expanded', 'collapsed'])
+
+    def test_rail_saves_without_touching_theme(self):
+        """部分更新：只提交 rail 时主题必须原样保留"""
+        self.post('/api/prefs', {'theme': 'dark'}, token=self.state.token)
+        status, body = self.post('/api/prefs', {'rail': 'collapsed'}, token=self.state.token)
+        self.assertEqual(status, 200)
+        self.assertEqual(body['rail'], 'collapsed')
+        self.assertEqual(self.read_prefs(), {'theme': 'dark', 'rail': 'collapsed'})
+
+    def test_theme_saves_without_touching_rail(self):
+        self.post('/api/prefs', {'rail': 'collapsed'}, token=self.state.token)
+        self.post('/api/prefs', {'theme': 'light'}, token=self.state.token)
+        self.assertEqual(self.read_prefs(), {'theme': 'light', 'rail': 'collapsed'})
+
+    def test_rejects_an_unknown_rail_value(self):
+        status, body = self.post('/api/prefs', {'rail': 'sideways'}, token=self.state.token)
+        self.assertEqual(status, 400)
+        self.assertIn('导航栏', body['error'])
+        self.assertFalse(os.path.exists(self.prefs_file()))
+
+    def test_rejects_a_body_with_no_known_keys(self):
+        """空对象说明调用方搞错了接口，静默 200 会把这个错误藏起来"""
+        status, body = self.post('/api/prefs', {'nonsense': 1}, token=self.state.token)
+        self.assertEqual(status, 400)
+        self.assertIn('界面偏好', body['error'])
 
     def test_requires_the_panel_token(self):
         status, _body = self.post('/api/prefs', {'theme': 'dark'})
