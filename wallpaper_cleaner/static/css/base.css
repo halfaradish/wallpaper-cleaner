@@ -1,0 +1,159 @@
+/* 基线：重置、排版默认值、焦点、滚动条、噪点 */
+
+* { box-sizing: border-box; }
+
+/* html 上不能设 font-size：rem 的基准就是它，一旦在这里写成 0.875rem，
+   它会先按浏览器默认值（16px）解析成 14px，之后全站每一个 rem 都变成 14 的倍数——
+   正文的 0.875rem 就成了 12.25px，整套字号标度集体缩水 12.5%。
+   基准留给浏览器默认值，字号只在 body 上设。 */
+html { margin: 0; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--fs-base);
+  line-height: var(--lh-base);
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  padding-bottom: var(--sp-8);
+  /* 底噪：纯平的大色块看着像没画完。一层极淡的噪点就够，且必须是固定层——
+     滚动时不跟着动，否则会有"脏屏"感 */
+  position: relative;
+}
+
+/* 噪点用 SVG feTurbulence 现画，不引图片文件；pointer-events 关掉，
+   否则它会吃掉整页的点击。浅色主题与强制颜色模式下关掉（见文件末尾）。 */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: var(--grain-opacity);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* 内容要压在噪点之上 */
+.topbar, main, .drawer, .overlay, .lightbox, .toast { position: relative; }
+
+h1, h2, h3, h4 {
+  margin: 0;
+  font-weight: 600;
+  letter-spacing: var(--track-tight);
+  /* 中文标题断行更自然，也避免最后一行只剩一两个字 */
+  text-wrap: pretty;
+}
+
+code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--surface-3);
+  padding: 0.1em 0.35em;
+  border-radius: var(--r-xs);
+  color: var(--text-dim);
+}
+
+.hidden { display: none !important; }
+
+/* ---------- 标签：全站统一的小标题样式 ----------
+   原先用 text-transform: uppercase 做小标题，但界面上这些标签（预览、标题、
+   类型、位置设置、运行日志、关于）全是中文，uppercase 对汉字没有任何效果，
+   真正落地的只有 0.04–0.06em 的字距——汉字被拉得比设计意图松。
+   这里改成按中文调的字距，语义仍由 font-weight 与颜色表达。 */
+.label {
+  font-size: var(--fs-label);
+  font-weight: 500;
+  letter-spacing: var(--track-label);
+  color: var(--muted);
+}
+
+/* ---------- 焦点 ----------
+   键盘用户唯一的方位感来源。只在 :focus-visible 上画，鼠标点击不会闪圈。
+   用 outline 而不是 box-shadow：outline 不参与布局，也不会被 overflow 裁掉。 */
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--r-xs);
+}
+
+/* 自定义绘制的勾选框/单选：外圈画在控件本身上，偏移量要小一点才贴合 */
+input[type="checkbox"]:focus-visible,
+input[type="radio"]:focus-visible {
+  outline-offset: 2px;
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--surface-2); }
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: var(--r-full);
+  border: 2px solid var(--surface-2);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
+
+/* ---------- 动效偏好 ----------
+   系统里关了动画就全部关掉，但状态变化本身要保留（比如进度条仍要走，
+   只是不走过渡）。1ms 而不是 0：某些浏览器会跳过 0 时长的 transition 事件。 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+  body::before { opacity: 0; }
+}
+
+/* ---------- 强制颜色模式（Windows 高对比度） ----------
+   这是本工具最要紧的一条包容性适配：勾选框与单选框是 appearance:none 自绘的，
+   在强制颜色模式下自绘的边框和底色会被系统抹掉，控件变成看不见的空框——
+   而"看不见勾选框"意味着整个清理流程没法用。
+
+   对策：把自绘的形状交还给系统色（CanvasText 画边框、Highlight 画选中），
+   去掉一切装饰（噪点、渐变、阴影、半透明底色）。 */
+@media (forced-colors: active) {
+  /* 装饰一律去掉：系统会用自己的配色，渐变与阴影只会糊成一片 */
+  body::before { opacity: 0; }
+  .logo { background: CanvasText; box-shadow: none; }
+  .logo::after { background: Canvas; }
+  .topbar { background: Canvas; backdrop-filter: none; box-shadow: none; }
+  .card, .stat, .dialog, .drawer, .result, .notice, .toast, .connbar { box-shadow: none; }
+  .card-head { background: Canvas; }
+  .stat-bar, .bar { border: 1px solid CanvasText; background: Canvas; }
+  .stat-bar-fill, .bar-fill { background: Highlight; }
+  .skeleton { background: Canvas; border: 1px solid CanvasText; }
+  .skeleton::after { display: none; }
+
+  /* 自绘控件的可见性：强制颜色下必须重新描边，否则是空的 */
+  input[type="checkbox"],
+  input[type="radio"] {
+    border: 1px solid CanvasText;
+    background: Canvas;
+  }
+  input[type="checkbox"]:checked,
+  input[type="radio"]:checked {
+    border-color: Highlight;
+    background: Highlight;
+  }
+  /* 勾与圆点用系统的高亮文字色画，保证与高亮底色有对比 */
+  input[type="checkbox"]:checked::after { border-color: HighlightText; }
+  input[type="radio"]:checked::after { background: HighlightText; }
+  input[type="checkbox"]:disabled,
+  input[type="radio"]:disabled { border-color: GrayText; }
+
+  /* 焦点环交给系统色：--focus-ring 在强制颜色下会被忽略 */
+  :focus-visible { outline-color: Highlight; }
+
+  /* 状态不只靠颜色：强制颜色会把所有色相压成同一个系统色，
+     徽章与选中行必须靠边框与形状区分开 */
+  .badge { border-color: CanvasText; }
+  .badge.unknown { border-style: dashed; }
+  tbody tr.selected { background: Highlight; color: HighlightText; }
+  tbody tr.selected td:first-child { box-shadow: inset 3px 0 0 HighlightText; }
+  .steam-badge, .btn { border: 1px solid CanvasText; }
+  .title-text { text-decoration-color: CanvasText; }
+}

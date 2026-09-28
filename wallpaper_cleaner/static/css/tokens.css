@@ -1,0 +1,360 @@
+/* 设计令牌：全站唯一的色值、字体、尺寸与动效来源
+   ==========================================================================
+   分三层，改主题只动第二层：
+
+   1. 原色与标度（--p-* / --sp-* / --r-* / --fs-* ...）：不随主题变化。
+      色阶是一整条蓝灰中性色带，深浅主题共用同一族灰——混暖灰和冷灰是让界面
+      显脏的最快方式。
+   2. 语义层（--bg / --surface / --text / --accent ...）：组件只准用这一层。
+      换主题就是把这一层重新指一遍。
+   3. 组件层：组件样式里不允许再出现任何字面颜色值，否则浅色主题会漏。
+
+   另外两条规则：
+   - 字号一律用 rem，浏览器缩放与系统文字大小才会跟着变；只有 1px 边框、圆角
+     与图标这类"不该随字号缩放"的尺寸用 px。
+   - 所有颜色都通过 var() 引用，测试会拦住漏网的硬编码色值。
+   ========================================================================== */
+
+:root {
+  /* ---------- 1. 中性色阶（冷调蓝灰，一条带子） ---------- */
+  --p-ink-1000: #0a0d11;   /* 比页面底色更深，用于日志这种"凹陷"区域 */
+  --p-ink-950: #0d1014;    /* 页面底色 */
+  --p-ink-900: #141922;
+  --p-ink-850: #1a212c;
+  --p-ink-800: #212a37;
+  --p-ink-750: #28323f;
+  --p-ink-700: #262e3b;    /* 描边 */
+  --p-ink-600: #35404f;    /* 强描边 */
+  --p-ink-500: #4a5666;
+  --p-ink-400: #6b7688;
+  --p-ink-300: #8a95a7;    /* 最暗的次要文字：在最亮的表面上也有 4.78:1 */
+  --p-ink-200: #aeb7c6;
+  --p-ink-100: #e4e8ef;
+
+  /* ---------- 1. 强调色：只有一个色相（蓝，饱和度 65% < 80%） ---------- */
+  --p-accent-700: #27506f;
+  --p-accent-600: #2f5d86;  /* 按钮底色 */
+  --p-accent-500: #3a6f9c;  /* 按钮悬停 */
+  --p-accent-400: #6aa9e0;  /* 主强调色 */
+  --p-accent-100: #eaf3fb;  /* 强调底上的文字 */
+
+  /* ---------- 1. 语义色：每种只有一个色相，饱和度统一压低 ---------- */
+  --p-red-600: #6b2a26;
+  --p-red-500: #85332d;
+  --p-red-400: #e0574f;
+  --p-red-300: #f3c4c0;
+  --p-amber-600: #7a6432;
+  --p-amber-500: #d9a441;
+  --p-amber-300: #ecd6a8;
+  --p-green-600: #2f6b48;
+  --p-green-500: #4fb477;
+  --p-green-300: #cdebd9;
+
+  /* ---------- 1. 间距（4 基数，越往上越少用） ---------- */
+  --sp-1: 0.25rem;   /*  4px */
+  --sp-2: 0.5rem;    /*  8px */
+  --sp-3: 0.75rem;   /* 12px */
+  --sp-4: 1rem;      /* 16px */
+  --sp-5: 1.25rem;   /* 20px */
+  --sp-6: 1.5rem;    /* 24px */
+  --sp-7: 2rem;      /* 32px */
+  --sp-8: 2.5rem;    /* 40px */
+
+  /* ---------- 1. 圆角（内层紧、外层松） ---------- */
+  --r-xs: 0.25rem;
+  --r-sm: 0.375rem;
+  --r-md: 0.5rem;
+  --r-lg: 0.75rem;
+  --r-full: 999px;
+
+  /* ---------- 1. 字号（rem，1rem = 16px） ---------- */
+  --fs-micro: 0.6875rem;  /* 11px 只给非必需的辅助信息 */
+  --fs-label: 0.75rem;    /* 12px 标签 */
+  --fs-sm: 0.8125rem;     /* 13px 正文小号 */
+  --fs-base: 0.875rem;    /* 14px 正文 */
+  --fs-title: 1rem;       /* 16px 卡片标题 */
+  --fs-lg: 1.125rem;      /* 18px 弹窗标题 */
+  --fs-num-sm: 1.25rem;   /* 20px 次级数字 */
+  --fs-num: 1.75rem;      /* 28px 主数字 */
+
+  --lh-tight: 1.3;
+  --lh-snug: 1.5;
+  --lh-base: 1.6;
+  --lh-loose: 1.75;
+
+  /* 字距：中文标签给 0.02em 就够。原先 0.04–0.06em 是照拉丁大写小标题调的，
+     而界面上那些标签全是中文，uppercase 不生效、只剩过松的字距。 */
+  --track-tight: -0.02em;
+  --track-normal: 0;
+  --track-label: 0.02em;
+
+  /* ---------- 1. 字体栈 ---------- */
+  /* Win11 用 Segoe UI Variable Text（比旧 Segoe UI 在小字号下更清晰）；
+     CJK 由雅黑接住——雅黑的 UI 变体比正文变体更适配界面小字 */
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system,
+             "Microsoft YaHei UI", "Microsoft YaHei", Roboto, sans-serif;
+  /* 等宽里故意把中日韩等宽排在 Consolas 前面：日志正文是中文，
+     Consolas 没有 CJK 字形、会回退成非等宽，中英混排就对不齐了。
+     这两个不一定装了，装了就优先用，没装照样落到 Consolas。 */
+  --font-mono: "Cascadia Mono", "Cascadia Code", "Sarasa Mono SC", "Sarasa Term SC",
+               Consolas, ui-monospace, "Liberation Mono", monospace;
+
+  /* ---------- 1. 层级（不再出现 9999 这种数字） ---------- */
+  --z-base: 1;         /* 表头吸顶，只在表格内部比较 */
+  --z-topbar: 20;
+  --z-drawer: 40;
+  --z-overlay: 60;
+  --z-lightbox: 70;
+  --z-toast: 80;
+  --z-skip-link: 100;
+
+  /* ---------- 1. 动效 ---------- */
+  --dur-instant: 80ms;
+  --dur-fast: 130ms;
+  --dur-base: 200ms;
+  --dur-slow: 300ms;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-spring: cubic-bezier(0.34, 1.3, 0.64, 1);
+
+  /* ==========================================================================
+     2. 语义层（深色，默认）
+     ========================================================================== */
+
+  /* 不设 data-theme（或设为 auto）时跟随系统：两个都声明，由浏览器挑 */
+  color-scheme: dark light;
+
+  --bg: var(--p-ink-950);
+  --surface: var(--p-ink-900);
+  --surface-2: var(--p-ink-850);
+  --surface-3: var(--p-ink-800);
+  --surface-4: var(--p-ink-750);   /* 落在 surface-3 上的悬停态 */
+
+  --border: var(--p-ink-700);
+  --border-strong: var(--p-ink-600);
+  --border-faint: rgb(38 46 59 / 0.6);   /* 表格行分隔线 */
+
+  --text: var(--p-ink-100);
+  --text-dim: var(--p-ink-200);
+  --muted: var(--p-ink-300);
+
+  --accent: var(--p-accent-400);
+  --accent-bg: var(--p-accent-600);
+  --accent-bg-hover: var(--p-accent-500);
+  --accent-bg-press: var(--p-accent-700);
+  --accent-on: var(--p-accent-100);
+  --accent-soft: rgb(106 169 224 / 0.12);
+  --accent-border: rgb(106 169 224 / 0.4);
+  --accent-row: rgb(106 169 224 / 0.07);
+
+  --danger: var(--p-red-400);
+  --danger-bg: var(--p-red-600);
+  --danger-bg-hover: var(--p-red-500);
+  --danger-border: rgb(224 87 79 / 0.45);
+  --danger-border-solid: var(--p-red-600);
+  --danger-on: #ffdcd8;
+  --danger-soft: rgb(224 87 79 / 0.1);
+  --danger-text: var(--p-red-300);
+  /* 提示条/日志那种"深色底"比按钮底还要深一档：错误提示应当是全场最沉的，
+     按钮底那种中亮度铺满一条会很吵 */
+  --danger-surface: #3a1f1c;
+
+  --warn: var(--p-amber-500);
+  --warn-border: rgb(217 164 65 / 0.4);
+  --warn-border-solid: var(--p-amber-600);
+  --warn-soft: rgb(217 164 65 / 0.1);
+  --warn-text: var(--p-amber-300);
+
+  --good: var(--p-green-500);
+  --good-border: rgb(79 180 119 / 0.45);
+  --good-border-solid: var(--p-green-600);
+  --good-soft: rgb(79 180 119 / 0.1);
+  --good-text: var(--p-green-300);
+  --good-surface: #16301f;
+
+  /* 弹窗遮罩：与底色同色相，压暗但不发黑 */
+  --scrim: rgb(6 8 11 / 0.72);
+  --scrim-strong: rgb(6 8 11 / 0.85);
+
+  /* 阴影一律带底色的蓝调，而不是纯黑：纯黑阴影会让暗色界面显灰 */
+  --shadow-1: 0 1px 2px rgb(4 8 16 / 0.35);
+  --shadow-2: 0 4px 12px rgb(4 8 16 / 0.4);
+  --shadow-3: 0 12px 30px rgb(4 8 16 / 0.45);
+  --shadow-4: 0 24px 60px rgb(4 8 16 / 0.55);
+  --shadow-drawer: -18px 0 40px rgb(4 8 16 / 0.45);
+  /* 1px 内高光：模拟顶面受光，让面板有厚度而不是一张贴纸 */
+  --edge-highlight: inset 0 1px 0 rgb(226 234 245 / 0.05);
+  --focus-ring: var(--accent);
+
+  --log-bg: var(--p-ink-1000);
+  --scrollbar-thumb: var(--p-ink-600);
+  --scrollbar-thumb-hover: var(--p-ink-500);
+  --grain-opacity: 0.035;
+  --thumb-hover-scale: 1.03;
+  /* 等待 Steam 同步的行压暗多少。深色下 0.72 够用，浅色下同样的透明度会把
+     深色文字冲淡到 4.34:1（低于 AA），所以两套主题给不同的值。 */
+  --pending-opacity: 0.72;
+  /* 顶栏左上角那点受光的偏色，让它不是一块纯色板 */
+  --topbar-tint: rgb(106 169 224 / 0.06);
+}
+
+/* ==========================================================================
+   2b. 语义层（浅色）
+
+   只重新指向原色，一条组件样式都不动——这正是"组件层不出现字面颜色"的价值。
+   灰色仍然沿用同一族冷调蓝灰，只是翻到浅端：深色一套冷灰、浅色一套暖灰，
+   是让两套主题看起来像两个产品的常见原因。
+
+   浅色下每个前景/背景配对都按 ≥4.5:1 校过（tests/test_static.py 里有断言）。
+
+   ⚠️ 下面这段声明出现了两次，是 CSS 逼出来的：媒体查询没法写进选择器列表，
+   而"手动选浅色"和"跟随系统且系统是浅色"这两种情况必须都能命中。不引 light-dark()
+   是因为它要 Chromium 123+，面板跑在 WebView2 里，版本偏旧时整套颜色会一起失效，
+   失败得太难看。重复由 tests/test_static.py 的哨兵注释比对守着，改一处必须改两处。
+   ========================================================================== */
+
+/* 手动指定浅色（系统是深色时也生效） */
+:root[data-theme="light"] {
+  color-scheme: light;
+/* >>>light-tokens>>> */
+  --p-ink-1000: #ffffff;   /* 浅色下"凹陷"区反而最亮：日志块用白底更清楚 */
+  --p-ink-950: #eef1f5;    /* 页面底色：不用纯白，压一点才不刺眼 */
+  --p-ink-900: #f8fafc;
+  --p-ink-850: #eff2f6;
+  --p-ink-800: #e4e9ef;
+  --p-ink-750: #d9e0e8;
+  --p-ink-700: #d3dae2;
+  --p-ink-600: #bcc6d2;
+  --p-ink-500: #a9b4c2;
+  --p-ink-400: #8b97a6;
+  --p-ink-300: #5a6779;    /* 次要文字：在最亮的表面上 5.50:1，最暗的表面上 4.71:1 */
+  --p-ink-200: #3f4c5c;
+  --p-ink-100: #16202c;    /* 正文不用纯黑：纯黑在浅底上会晕开 */
+  --p-accent-700: #17456b;
+  --p-accent-600: #23608f;
+  --p-accent-500: #1b527c;
+  --p-accent-400: #1f5c8f;  /* 浅底上的强调色必须比深色版暗得多才有对比 */
+  --p-accent-100: #ffffff;
+  --p-red-600: #a8322a;
+  --p-red-500: #8f2a23;
+  --p-red-400: #a8322a;
+  --p-red-300: #a8322a;
+  --p-amber-600: #7d5800;
+  --p-amber-500: #7d5800;
+  --p-amber-300: #7d5800;
+  --p-green-600: #1f6b42;
+  --p-green-500: #1f6b42;
+  --p-green-300: #1f6b42;
+  --border-faint: rgb(211 218 226 / 0.75);
+  --accent-soft: rgb(31 92 143 / 0.1);
+  --accent-border: rgb(31 92 143 / 0.35);
+  --accent-row: rgb(31 92 143 / 0.07);
+  --danger-border: rgb(168 50 42 / 0.4);
+  --danger-border-solid: rgb(168 50 42 / 0.45);
+  --danger-soft: rgb(168 50 42 / 0.08);
+  --danger-on: #ffffff;
+  --danger-text: #a8322a;
+  --danger-surface: #fdf0ef;
+  --warn-border: rgb(125 88 0 / 0.35);
+  --warn-border-solid: rgb(125 88 0 / 0.4);
+  --warn-soft: rgb(125 88 0 / 0.08);
+  --warn-text: #7d5800;
+  --good-border: rgb(31 107 66 / 0.35);
+  --good-border-solid: rgb(31 107 66 / 0.4);
+  --good-soft: rgb(31 107 66 / 0.08);
+  --good-text: #1f6b42;
+  --good-surface: #eef7f1;
+  --scrim: rgb(23 32 44 / 0.4);
+  --scrim-strong: rgb(23 32 44 / 0.55);
+  /* 浅色下的阴影要更淡、更散：深色阴影在浅底上会显脏 */
+  --shadow-1: 0 1px 2px rgb(31 45 65 / 0.08);
+  --shadow-2: 0 4px 12px rgb(31 45 65 / 0.1);
+  --shadow-3: 0 12px 30px rgb(31 45 65 / 0.12);
+  --shadow-4: 0 24px 60px rgb(31 45 65 / 0.16);
+  --shadow-drawer: -18px 0 40px rgb(31 45 65 / 0.12);
+  --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.8);
+  --focus-ring: #1f5c8f;
+  --log-bg: var(--p-ink-1000);
+  --topbar-tint: rgb(31 92 143 / 0.05);
+  /* 浅底上的噪点像屏幕脏了，直接关掉 */
+  --grain-opacity: 0;
+  --pending-opacity: 0.82;
+  /* <<<light-tokens<<< */
+}
+
+/* 跟随系统（只有用户没手动表态时才生效） */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]):not([data-theme="light"]) {
+    color-scheme: light;
+  /* >>>light-tokens>>> */
+  --p-ink-1000: #ffffff;   /* 浅色下"凹陷"区反而最亮：日志块用白底更清楚 */
+  --p-ink-950: #eef1f5;    /* 页面底色：不用纯白，压一点才不刺眼 */
+  --p-ink-900: #f8fafc;
+  --p-ink-850: #eff2f6;
+  --p-ink-800: #e4e9ef;
+  --p-ink-750: #d9e0e8;
+  --p-ink-700: #d3dae2;
+  --p-ink-600: #bcc6d2;
+  --p-ink-500: #a9b4c2;
+  --p-ink-400: #8b97a6;
+  --p-ink-300: #5a6779;    /* 次要文字：在最亮的表面上 5.50:1，最暗的表面上 4.71:1 */
+  --p-ink-200: #3f4c5c;
+  --p-ink-100: #16202c;    /* 正文不用纯黑：纯黑在浅底上会晕开 */
+  --p-accent-700: #17456b;
+  --p-accent-600: #23608f;
+  --p-accent-500: #1b527c;
+  --p-accent-400: #1f5c8f;  /* 浅底上的强调色必须比深色版暗得多才有对比 */
+  --p-accent-100: #ffffff;
+  --p-red-600: #a8322a;
+  --p-red-500: #8f2a23;
+  --p-red-400: #a8322a;
+  --p-red-300: #a8322a;
+  --p-amber-600: #7d5800;
+  --p-amber-500: #7d5800;
+  --p-amber-300: #7d5800;
+  --p-green-600: #1f6b42;
+  --p-green-500: #1f6b42;
+  --p-green-300: #1f6b42;
+  --border-faint: rgb(211 218 226 / 0.75);
+  --accent-soft: rgb(31 92 143 / 0.1);
+  --accent-border: rgb(31 92 143 / 0.35);
+  --accent-row: rgb(31 92 143 / 0.07);
+  --danger-border: rgb(168 50 42 / 0.4);
+  --danger-border-solid: rgb(168 50 42 / 0.45);
+  --danger-soft: rgb(168 50 42 / 0.08);
+  --danger-on: #ffffff;
+  --danger-text: #a8322a;
+  --danger-surface: #fdf0ef;
+  --warn-border: rgb(125 88 0 / 0.35);
+  --warn-border-solid: rgb(125 88 0 / 0.4);
+  --warn-soft: rgb(125 88 0 / 0.08);
+  --warn-text: #7d5800;
+  --good-border: rgb(31 107 66 / 0.35);
+  --good-border-solid: rgb(31 107 66 / 0.4);
+  --good-soft: rgb(31 107 66 / 0.08);
+  --good-text: #1f6b42;
+  --good-surface: #eef7f1;
+  --scrim: rgb(23 32 44 / 0.4);
+  --scrim-strong: rgb(23 32 44 / 0.55);
+  /* 浅色下的阴影要更淡、更散：深色阴影在浅底上会显脏 */
+  --shadow-1: 0 1px 2px rgb(31 45 65 / 0.08);
+  --shadow-2: 0 4px 12px rgb(31 45 65 / 0.1);
+  --shadow-3: 0 12px 30px rgb(31 45 65 / 0.12);
+  --shadow-4: 0 24px 60px rgb(31 45 65 / 0.16);
+  --shadow-drawer: -18px 0 40px rgb(31 45 65 / 0.12);
+  --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.8);
+  --focus-ring: #1f5c8f;
+  --log-bg: var(--p-ink-1000);
+  --topbar-tint: rgb(31 92 143 / 0.05);
+  /* 浅底上的噪点像屏幕脏了，直接关掉 */
+  --grain-opacity: 0;
+  --pending-opacity: 0.82;
+  /* <<<light-tokens<<< */
+  }
+}
+
+/* 手动指定深色：值就是 :root 里那套，这里只需要把 color-scheme 钉死，
+   否则系统是浅色时原生控件（滚动条、输入框）会跟着系统变浅 */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}

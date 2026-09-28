@@ -70,6 +70,10 @@ script_dir = app_home_dir()
 config_path = os.path.join(script_dir, 'config.yml')
 legacy_config_path = os.path.join(script_dir, 'config.json')
 log_dir = os.path.join(script_dir, 'logs')
+# 界面偏好（目前只有主题）单独放一个文件，不和 config.yml 混在一起：
+# config.yml 回答的是"去哪儿找 Wallpaper Engine"，界面偏好是另一回事；
+# 而且它会被面板随时改写，不该去动用户手写的那些注释
+prefs_path = os.path.join(script_dir, 'prefs.json')
 
 logger = logging.getLogger('WallpaperCleaner')
 
@@ -321,6 +325,36 @@ def read_config_file(path):
         )
     except OSError as e:
         raise ConfigError(f'读取配置文件失败 ({path}): {e}')
+
+
+# ---------- 界面偏好 ----------
+#
+# 与 config.yml 刻意分开：那是一份需要用户手写、要保留注释的配置；界面偏好是程序
+# 自己读写的小状态。两者混在一起的话，面板每次改主题都要重写用户的配置文件。
+#
+# 这里的读写一律不抛异常：读不出来就回退默认值，写不进去就只记日志。一个显示偏好
+# 不该让面板打不开，也不该让"切换主题"这个动作失败得像是程序坏了。
+
+def load_prefs():
+    """读取界面偏好，返回 dict；文件缺失或损坏都返回空 dict"""
+    try:
+        with open(prefs_path, 'r', encoding='utf-8-sig') as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_prefs(prefs):
+    """写入界面偏好，成功返回 True；失败只记日志并返回 False"""
+    ensure_dir(script_dir)
+    try:
+        with open(prefs_path, 'w', encoding='utf-8') as f:
+            json.dump(prefs, f, ensure_ascii=False, indent=2)
+        return True
+    except OSError as e:
+        logger.warning('界面偏好写入失败 (%s): %s', prefs_path, e)
+        return False
 
 
 def write_default_config():

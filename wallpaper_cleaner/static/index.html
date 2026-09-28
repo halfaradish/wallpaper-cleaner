@@ -1,34 +1,83 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="__PANEL_THEME_VALUE__">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Wallpaper Cleaner</title>
+<!-- 面板 token 与版本号：以前是内联 <script>，那会逼着 CSP 放行 unsafe-inline，
+     等于把「注入脚本也读得到 token」这条路留着。改成 <meta> 后 script-src 只用 'self'。
+     占位符由 web.py 每次请求现替换，与 JS 变量名不同名，避免把变量名一起替换掉 -->
+<meta name="panel-token" content="__PANEL_TOKEN_VALUE__">
+<meta name="panel-version" content="__PANEL_VERSION_VALUE__">
 <!-- 与 exe 图标同造型（渐变圆角方块 + 闪光），内联免得额外的文件与接口 -->
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><defs><linearGradient id='g' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='%236aa9e0'/><stop offset='1' stop-color='%231c3854'/></linearGradient></defs><rect x='2' y='2' width='60' height='60' rx='14' fill='url(%23g)'/><path d='M32 12 L37 27 L52 32 L37 37 L32 52 L27 37 L12 32 L27 27 Z' fill='white'/></svg>">
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/base.css">
+<link rel="stylesheet" href="/static/css/components.css">
+<link rel="stylesheet" href="/static/css/views.css">
 </head>
 <body>
 
+<!-- 键盘用户的第一个落点：跳过顶栏直接到内容。平时藏起来，获得焦点才出现 -->
+<a class="skip-link" href="#main">跳到主要内容</a>
+
 <header class="topbar">
-  <div class="brand">
-    <span class="logo" aria-hidden="true"></span>
-    <div class="brand-text">
-      <h1>Wallpaper Cleaner</h1>
-      <p class="sub" id="config-line">正在检查…</p>
+  <div class="topbar-row">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"></span>
+      <div class="brand-text">
+        <h1>Wallpaper Cleaner</h1>
+        <p class="sub" id="config-line">正在检查…</p>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="steam-badge unknown" id="steam-badge"
+        title="取消订阅 / 重新订阅需要 Steam 在运行，点这里检测">Steam 未检测 · 检测</button>
+      <button class="btn" id="btn-scan">重新扫描</button>
+      <button class="btn ghost" id="btn-advanced">高级</button>
+      <!-- 主题三态：跟随系统 / 浅色 / 深色。图标与无障碍名都由 theme.js 按当前状态写 -->
+      <button class="icon-btn theme-btn" id="btn-theme" type="button"></button>
     </div>
   </div>
-  <div class="actions">
-    <button class="steam-badge unknown" id="steam-badge"
-      title="取消订阅 / 重新订阅需要 Steam 在运行，点这里检测">Steam 未检测 · 检测</button>
-    <button class="btn" id="btn-scan">重新扫描</button>
-    <button class="btn ghost" id="btn-advanced">高级</button>
+
+  <!-- 扫描进度内联在顶栏里，不再用全屏模态挡住整个面板：
+       打开面板会自动扫一遍，每次都挡住整页代价太大。
+       破坏性操作（清理 / 取消订阅 / 重新订阅）仍然用模态——那时确实不该乱点。 -->
+  <div class="taskbar hidden" id="taskbar">
+    <div class="bar bar-slim"><div class="bar-fill" id="taskbar-bar"></div></div>
+    <div class="taskbar-foot">
+      <span class="taskbar-message" id="taskbar-message">正在检查…</span>
+      <span class="taskbar-count" id="taskbar-count"></span>
+      <button class="taskbar-detail" id="btn-taskbar-detail" type="button">查看日志</button>
+    </div>
+  </div>
+
+  <!-- 后端失联横幅。以前后端没了的时候所有轮询静默失败、界面停在旧数据上，
+       既不报错也不恢复——这是最难排查的那种状态，所以必须显式说出来 -->
+  <div class="connbar hidden" id="connbar" role="alert">
+    <span id="connbar-text">与面板后端失去连接</span>
+    <button class="btn ghost" id="btn-reconnect" type="button">立即重试</button>
+  </div>
+
+  <!-- 令牌失效横幅：面板 token 每次运行现生成，后端重启后这个页面手里的就作废了。
+       读接口还能用，写接口一律 403——不说清楚的话，用户会以为"连上了但功能坏了"。
+       唯一的解法是重新取一份带新 token 的页面，所以只给一个刷新按钮。 -->
+  <div class="connbar hidden" id="stalebar" role="alert">
+    <span>面板程序已重新启动，本页面的访问令牌已失效。刷新后即可继续操作。</span>
+    <button class="btn ghost" id="btn-reload" type="button">刷新页面</button>
   </div>
 </header>
 
-<main>
+<main id="main">
   <div class="notice hidden" id="notice"></div>
 
+  <!-- 上一次操作的结果：可关闭的常驻卡片，而不是几秒就消失的一行提示。
+       清理/取消订阅的跳过原因往往有四五种，一闪而过的提示根本读不完。
+       tabindex=-1 是为了能在结果出现时把焦点送过来，让读屏用户立刻知道有结论了。 -->
+  <section class="result hidden" id="result" tabindex="-1" aria-labelledby="result-title"></section>
+
+  <!-- 概览：按「要不要动手」分主次，而不是四张一样重的卡片。
+       待清理与可释放空间带 primary，字号更大、描边更重。 -->
   <section class="stats">
     <div class="stat">
       <span class="stat-label">已订阅壁纸</span>
@@ -40,12 +89,16 @@
       <strong class="stat-value" id="stat-folders">—</strong>
       <span class="stat-foot" id="stat-scanned-at"></span>
     </div>
-    <div class="stat">
+    <div class="stat primary">
       <span class="stat-label">待清理</span>
       <strong class="stat-value warn" id="stat-orphans">—</strong>
       <span class="stat-foot" id="stat-unknown"></span>
+      <!-- 占比条：待清理占磁盘文件夹总数的比例。纯装饰，读屏不看它 -->
+      <div class="stat-bar hidden" id="stat-bar" aria-hidden="true">
+        <div class="stat-bar-fill" id="stat-bar-fill"></div>
+      </div>
     </div>
-    <div class="stat">
+    <div class="stat primary">
       <span class="stat-label">可释放空间</span>
       <strong class="stat-value good" id="stat-freed">—</strong>
       <span class="stat-foot">仅统计待清理目录</span>
@@ -78,10 +131,10 @@
             <th>workshop ID</th>
             <th>标题</th>
             <th class="col-kind">类型</th>
-            <th class="col-size col-declared" title="标注大小：Steam / Wallpaper Engine 记录里写的内容字节数，也就是「上次安装时多大」。作者更新后会更大，所以它不等于重新订阅需要下载的量；没有记录时显示「未知」">标注大小</th>
+            <th class="col-size col-declared" aria-describedby="help-columns" title="标注大小：Steam / Wallpaper Engine 记录里写的内容字节数，也就是「上次安装时多大」。作者更新后会更大，所以它不等于重新订阅需要下载的量；没有记录时显示「未知」">标注大小</th>
             <!-- 只有「磁盘占用」这一列是按钮，别的列头保持静态文字：整片表头都可点
                  会让人以为点哪儿都能排序 -->
-            <th class="col-size col-usage" aria-sort="none"
+            <th class="col-size col-usage" aria-sort="none" aria-describedby="help-columns"
               title="磁盘占用：按卷的簇大小对齐后的实际占用（每个子目录也算一个簇），接近资源管理器的「占用空间」；拿不到簇大小时退回文件字节数">
               <button type="button" class="sort-btn" id="sort-orphan" data-mode="default"
                 title="按磁盘占用排序：大到小 → 小到大 → 恢复默认">磁盘占用<span class="sort-icon"
@@ -119,8 +172,8 @@
               <th class="col-thumb">预览</th>
               <th>workshop ID</th>
               <th>标题</th>
-              <th class="col-size col-declared" title="标注大小：Steam / Wallpaper Engine 记录里写的内容字节数（Steam 内容记录优先，其次 WE 缓存里的标注），没有记录时显示「未知」">标注大小</th>
-              <th class="col-size col-usage" aria-sort="none"
+              <th class="col-size col-declared" aria-describedby="help-columns" title="标注大小：Steam / Wallpaper Engine 记录里写的内容字节数（Steam 内容记录优先，其次 WE 缓存里的标注），没有记录时显示「未知」">标注大小</th>
+              <th class="col-size col-usage" aria-sort="none" aria-describedby="help-columns"
                 title="磁盘占用：按卷的簇大小对齐后的实际占用（每个子目录也算一个簇），接近资源管理器的「占用空间」；拿不到簇大小时退回文件字节数">
                 <button type="button" class="sort-btn" id="sort-sub" data-mode="default"
                   title="按磁盘占用排序：大到小 → 小到大 → 恢复默认">磁盘占用<span class="sort-icon"
@@ -143,6 +196,11 @@
     <div class="bar"><div class="bar-fill" id="progress-bar"></div></div>
     <p class="progress-meta"><span id="progress-message">准备中…</span><span id="progress-count">0 / 0</span></p>
     <pre class="joblog" id="progress-log"></pre>
+    <!-- 破坏性操作进行中不可关闭（文件正在被删，这时不该乱点）；
+         从顶栏「查看日志」手动打开的才给这个出口 -->
+    <div class="dialog-actions hidden" id="progress-actions">
+      <button class="btn ghost" id="btn-close-progress">收起</button>
+    </div>
   </div>
 </div>
 
@@ -268,6 +326,16 @@
       <li>两个尺寸列分别是：「标注大小」是 Steam / WE 记录里写的内容大小（没有记录时显示「未知」），
         「磁盘占用」是按簇对齐后的实际占用，也就是删掉后真正腾出来的量。</li>
       <li>想把某张壁纸重新订阅回来，勾选它再点「重新订阅选中」，Steam 会自动下载回本地。</li>
+      <li id="help-columns"><strong>两个尺寸列的口径</strong>：
+        <ul>
+          <li><strong>标注大小</strong>——别人记下来的内容字节数，也就是「上次安装时多大」。
+            来自 Steam 的内容记录，没有时退回 WE 缓存里的标注，都没有就显示「未知」。</li>
+          <li><strong>磁盘占用</strong>——磁盘上真实占用了多少：文件字节数按卷的簇大小向上取整，
+            每个子目录也算一个簇。接近资源管理器的「占用空间」，也是删掉后真正腾出来的量。</li>
+          <li>内容完整时这两个数字很接近；小文件多的目录里「磁盘占用」会明显更大。
+            「标注大小」不等于重新订阅要下载的量——作者更新过内容的话会更大。</li>
+        </ul>
+      </li>
     </ul>
     <div class="dialog-actions">
       <button class="btn ghost" id="btn-close-orphan-help">知道了</button>
@@ -346,17 +414,16 @@
   </div>
 </aside>
 
-<div class="toast hidden" id="toast"></div>
+<!-- 提示堆叠：可以同时显示多条，后来的不再把前一条顶掉。
+     每条自带 live 语义（普通用 role=status、错误用 role=alert），
+     所以不需要在容器上再挂 aria-live，也就没有嵌套播报的问题。 -->
+<div class="toasts" id="toasts"></div>
 
 <!-- 放大看预览图 -->
-<div class="lightbox hidden" id="lightbox">
+<div class="lightbox hidden" id="lightbox" role="dialog" aria-modal="true" aria-label="预览图">
   <img id="lightbox-img" alt="">
 </div>
 
-<script>
-  window.__PANEL_TOKEN__ = "__PANEL_TOKEN_VALUE__";
-  window.__PANEL_VERSION__ = "__PANEL_VERSION_VALUE__";
-</script>
-<script src="/static/app.js"></script>
+<script type="module" src="/static/js/main.js"></script>
 </body>
 </html>

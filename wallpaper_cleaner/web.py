@@ -48,12 +48,61 @@ def _find_static_dir():
 
 
 STATIC_DIR = _find_static_dir()
-STATIC_FILES = ('index.html', 'app.js', 'style.css')
+
+
+def _static_dir_stamp():
+    """整棵静态目录树的"版本号"：各层目录 mtime 的集合
+
+    只 stat 目录、不 stat 文件：增删文件会改父目录的 mtime，改内容不会——
+    而改内容本来就不需要重扫白名单（文件名没变）。
+    目录只有几个，这点开销可以忽略。
+    """
+    stamps = []
+    for root, _dirs, _names in os.walk(STATIC_DIR):
+        try:
+            stamps.append(os.stat(root).st_mtime_ns)
+        except OSError:
+            pass
+    return tuple(sorted(stamps))
+
+
+_static_cache = {'stamp': None, 'files': frozenset()}
+
+
+def static_files():
+    """静态资源白名单：以磁盘上的实际文件为准
+
+    手写清单漏一个就是一个只在浏览器控制台里看得见的 404，所以以磁盘为准。
+    但也不能只在导入时扫一次：开发时新加一个前端模块就得重启面板，太别扭。
+    用目录树的 mtime 当缓存键，两边都占上。
+    """
+    stamp = _static_dir_stamp()
+    if stamp != _static_cache['stamp']:
+        found = set()
+        for root, _dirs, names in os.walk(STATIC_DIR):
+            for name in names:
+                rel = os.path.relpath(os.path.join(root, name), STATIC_DIR)
+                found.add(rel.replace(os.sep, '/'))
+        _static_cache['stamp'] = stamp
+        _static_cache['files'] = frozenset(found)
+    return _static_cache['files']
+
+
 CONTENT_TYPES = {
     '.html': 'text/html; charset=utf-8',
     '.js': 'application/javascript; charset=utf-8',
+    '.mjs': 'application/javascript; charset=utf-8',
     '.css': 'text/css; charset=utf-8',
+    '.svg': 'image/svg+xml',
 }
+
+# 面板页面里内嵌着本次运行的 token，任何被注入的脚本都能读到它，所以必须掐掉脚本注入
+# 这条路：页面自身不再有内联 <script>（token 改由 <meta> 传递），因此不需要 unsafe-inline。
+# img-src 放行 data: 是给 index.html 里那张 data-URI favicon。
+PANEL_CSP = (
+    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+    "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+)
 # 缩略图按扩展名精确给类型：响应带 nosniff，类型给错浏览器就直接不渲染
 PREVIEW_CONTENT_TYPES = {
     '.jpg': 'image/jpeg',
@@ -67,7 +116,11 @@ MAX_KEPT_JOBS = 20
 MAX_BODY_BYTES = 256 * 1024
 
 # 前端轮询与静态资源的请求量很大，不写进日志，否则会把日志刷满
-_quiet_request = re.compile(r'^/(favicon\.ico|static/)|^/api/(job/|state|thumb)')
+_quiet_request = re.compile(r'^/(favicon\.ico|static/)|^/api/(job/|state|thumb|prefs)')
+
+# 主题三态：auto 是"跟着系统走"。默认 auto——面板不该在用户没表态时替他定死一个
+THEMES = ('auto', 'light', 'dark')
+DEFAULT_THEME = 'auto'
 
 
 def _line(level, text):
@@ -553,13 +606,15 @@ class PanelHandler(BaseHTTPRequestHandler):
             return
         core.logger.debug('[面板] %s %s', self.address_string(), fmt % args)
 
-    def _send_bytes(self, data, content_type, status=200, cache='no-store', etag=None):
+    def _send_bytes(self, data, content_type, status=200, cache='no-store', etag=None, extra=None):
         self.send_response(status)
         self.send_header('Content-Type', content_type)
         self.send_header('Content-Length', str(len(data)))
         self.send_header('Cache-Control', cache)
         if etag:
             self.send_header('ETag', etag)
+        for key, value in extra or ():
+            self.send_header(key, value)
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.end_headers()
         if self.command != 'HEAD':
@@ -668,6 +723,8 @@ class PanelHandler(BaseHTTPRequestHandler):
             return self._serve_static(path[len('/static/'):])
         if path == '/api/state':
             return self._send_json(self._state_payload())
+        if path == '/api/prefs':
+            return self._get_prefs()
         if path == '/api/thumb':
             return self._serve_thumb(parse_qs(parsed.query))
         if path == '/api/logs':
@@ -701,6 +758,8 @@ class PanelHandler(BaseHTTPRequestHandler):
             return self._post_reveal(body)
         if parsed.path == '/api/config':
             return self._post_config(body)
+        if parsed.path == '/api/prefs':
+            return self._post_prefs(body)
         if parsed.path == '/api/autodetect':
             return self._post_autodetect()
         if parsed.path == '/api/steam/probe':
@@ -1094,6 +1153,29 @@ class PanelHandler(BaseHTTPRequestHandler):
         )
         self._send_bytes(data, content_type, cache=cache, etag=etag)
 
+    # ---------- 界面偏好 ----------
+
+    def _stored_theme(self):
+        """存下来的主题；认不出来的一律当 auto（跟着系统走）"""
+        theme = core.load_prefs().get('theme')
+        return theme if theme in THEMES else DEFAULT_THEME
+
+    def _get_prefs(self):
+        self._send_json({'theme': self._stored_theme(), 'themes': list(THEMES)})
+
+    def _post_prefs(self, body):
+        theme = body.get('theme')
+        if theme not in THEMES:
+            return self._send_json({'error': f'未知的主题设置: {theme!r}'}, 400)
+        prefs = core.load_prefs()
+        prefs['theme'] = theme
+        if not core.save_prefs(prefs):
+            # 目录不可写之类。界面已经先把主题换过去了，这里如实说明"存不下来"
+            return self._send_json(
+                {'error': f'主题已切换，但存不进去（{core.prefs_path} 不可写）'}, 500
+            )
+        self._send_json({'theme': theme})
+
     # ---------- 静态文件 ----------
 
     def _serve_index(self):
@@ -1105,18 +1187,51 @@ class PanelHandler(BaseHTTPRequestHandler):
         # 占位符与 JS 变量名必须不同，否则会把变量名一起替换掉
         html = html.replace('__PANEL_TOKEN_VALUE__', self.server.state.token)
         html = html.replace('__PANEL_VERSION_VALUE__', __version__)
-        self._send_bytes(html.encode('utf-8'), CONTENT_TYPES['.html'])
+        # 主题也在这里注入：等页面加载完再问一次接口的话，用户选了深色而系统是浅色时
+        # 会先闪一下浅色。写进第一帧就没有这个问题。
+        html = html.replace('__PANEL_THEME_VALUE__', self._stored_theme())
+        # 页面本身每次都要现取（内嵌 token），不能缓存；CSP 只给文档，资源响应不需要
+        self._send_bytes(
+            html.encode('utf-8'),
+            CONTENT_TYPES['.html'],
+            extra=(('Content-Security-Policy', PANEL_CSP),),
+        )
 
     def _serve_static(self, name):
-        # 白名单匹配，天然挡住目录穿越
-        if name not in STATIC_FILES or name == 'index.html':
+        """按白名单发静态资源
+
+        白名单本身就是主要防线（清单里不可能出现带 .. 的项，天然挡住目录穿越）；
+        规范化后的包含性校验是第二道，免得将来白名单换成别处生成时留下缺口。
+        """
+        if name == 'index.html' or name not in static_files():
+            return self._send_json({'error': '文件不存在'}, 404)
+        path = os.path.normpath(os.path.join(STATIC_DIR, name.replace('/', os.sep)))
+        try:
+            inside = os.path.commonpath(
+                [os.path.abspath(STATIC_DIR), os.path.abspath(path)]
+            ) == os.path.abspath(STATIC_DIR)
+        except ValueError:
+            # 跨盘符之类，commonpath 直接拒绝
+            inside = False
+        if not inside:
             return self._send_json({'error': '文件不存在'}, 404)
         try:
-            with open(os.path.join(STATIC_DIR, name), 'rb') as f:
+            with open(path, 'rb') as f:
                 data = f.read()
+            info = os.stat(path)
         except OSError:
             return self._send_json({'error': '文件不存在'}, 404)
-        self._send_bytes(data, CONTENT_TYPES.get(os.path.splitext(name)[1], 'application/octet-stream'))
+
+        # 拆成多个模块后，每开一次面板要取十几个文件。带 ETag 让重复打开只回 304：
+        # 不是省那点本地带宽，而是省掉每个文件重新解析一遍。
+        etag = f'"{info.st_size:x}-{info.st_mtime_ns:x}"'
+        cache = 'no-cache'
+        if self.headers.get('If-None-Match') == etag:
+            return self._send_not_modified(cache, etag)
+        content_type = CONTENT_TYPES.get(
+            os.path.splitext(path)[1].lower(), 'application/octet-stream'
+        )
+        self._send_bytes(data, content_type, cache=cache, etag=etag)
 
 
 class PanelServer(ThreadingMixIn, HTTPServer):

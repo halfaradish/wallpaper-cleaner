@@ -15,6 +15,8 @@
 import json
 import locale
 import os
+import posixpath
+import re
 import socket
 import subprocess
 import sys
@@ -73,6 +75,78 @@ def fetch(url, timeout=5):
         return e.code, e.read().decode('utf-8', 'replace')
     except Exception:
         return None, None
+
+
+def check_assets(port, html):
+    """把首页引用到的静态资源、以及它们 import 到的模块全部取一遍
+
+    返回检查过的资源个数。任何一个取不到就抛 SystemExit。
+    PyInstaller 的 datas 是整目录拷贝，理论上不会漏；但这条检查的价值在于：
+    只要漏了，这里是"打包后跑一遍"的最后一道闸，而不是等用户打开面板才发现某块功能没了。
+    """
+    pattern = re.compile(r"""(?:href|src)="(/static/[^"]+)"|from\s+['"](\.[^'"]+)['"]""")
+    pending = [ref for ref in re.findall(r'(?:href|src)="(/static/[^"]+)"', html)]
+    seen = set()
+
+    while pending:
+        asset = pending.pop()
+        if asset in seen:
+            continue
+        seen.add(asset)
+        status, body = fetch(f'http://127.0.0.1:{port}{asset}')
+        if status != 200 or not body:
+            raise SystemExit(f'[smoke] 失败：静态资源 {asset} 不可用（HTTP {status}）')
+        # 顺着相对 import 继续走：模块图里任何一环缺失都会在这里暴露
+        for _static_ref, relative in pattern.findall(body):
+            if not relative:
+                continue
+            resolved = posixpath.normpath(
+                posixpath.join(posixpath.dirname(asset), relative)
+            )
+            pending.append(resolved)
+
+    if len(seen) < 5:
+        raise SystemExit(f'[smoke] 失败：只找到 {len(seen)} 个静态资源，模块图似乎没走通')
+    return len(seen)
+
+
+def check_prefs(port, home, html):
+    """主题偏好：读默认值 → 写一个值 → 确认落盘 → 确认首页第一帧就带着它
+
+    首页那一帧很关键：主题如果等页面加载完再问一次接口，用户选了深色而系统是浅色时
+    会先闪一下浅色。所以它必须像 token 一样由服务端注入。
+    """
+    token = re.search(r'name="panel-token" content="([^"]+)"', html)
+    if not token:
+        raise SystemExit('[smoke] 失败：首页里取不到面板 token')
+
+    status, body = fetch(f'http://127.0.0.1:{port}/api/prefs')
+    if status != 200 or '"theme"' not in (body or ''):
+        raise SystemExit(f'[smoke] 失败：/api/prefs 返回 HTTP {status}')
+
+    request = urllib.request.Request(
+        f'http://127.0.0.1:{port}/api/prefs',
+        data=json.dumps({'theme': 'dark'}).encode('utf-8'),
+        method='POST',
+        headers={'Content-Type': 'application/json', 'X-Panel-Token': token.group(1)},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as res:
+            if res.status != 200:
+                raise SystemExit(f'[smoke] 失败：写入界面偏好返回 HTTP {res.status}')
+    except urllib.error.HTTPError as e:
+        raise SystemExit(f'[smoke] 失败：写入界面偏好返回 HTTP {e.code}: {e.read()[:120]}')
+
+    prefs_file = os.path.join(home, 'prefs.json')
+    if not os.path.exists(prefs_file):
+        raise SystemExit(f'[smoke] 失败：界面偏好没有写到 {prefs_file}')
+    with open(prefs_file, 'r', encoding='utf-8') as f:
+        if json.load(f).get('theme') != 'dark':
+            raise SystemExit('[smoke] 失败：界面偏好的内容不对')
+
+    _status, page = fetch(f'http://127.0.0.1:{port}/')
+    if 'data-theme="dark"' not in (page or ''):
+        raise SystemExit('[smoke] 失败：存下来的主题没有注入首页第一帧')
 
 
 def wait_for_panel(port, process, deadline):
@@ -151,15 +225,24 @@ def main():
         html = wait_for_panel(port, process, time.time() + STARTUP_TIMEOUT)
         print('[smoke] 面板首页已返回', flush=True)
 
-        # 静态资源是打包时最容易漏的东西，单独确认一遍
-        for asset, needle in (
-            ('/static/style.css', '--accent'),
-            ('/static/app.js', '__PANEL_TOKEN__'),
-        ):
-            status, body = fetch(f'http://127.0.0.1:{port}{asset}')
-            if status != 200 or not body or needle not in body:
-                raise SystemExit(f'[smoke] 失败：静态资源 {asset} 不可用（HTTP {status}）')
-            print(f'[smoke] {asset} 正常', flush=True)
+        # 首页本身：token 占位符必须被替换掉。没换掉的话面板拿不到 token，
+        # 页面看着正常，但所有写操作都会 403——只看"首页返回 200"发现不了。
+        if '__PANEL_TOKEN_VALUE__' in html or 'name="panel-token"' not in html:
+            raise SystemExit('[smoke] 失败：面板首页的 token 占位符没有被替换')
+        if '__PANEL_THEME_VALUE__' in html or 'data-theme=' not in html:
+            raise SystemExit('[smoke] 失败：面板首页的主题占位符没有被替换')
+        print('[smoke] 首页 token 与主题注入正常', flush=True)
+
+        # 界面偏好要能真的落盘：打包版跑在 %APPDATA% 下，写不进去的话
+        # 主题每次启动都会被忘掉，而这一点在源码运行下测不出来
+        check_prefs(port, home, html)
+        print('[smoke] 界面偏好可读写', flush=True)
+
+        # 静态资源是打包时最容易漏的东西。前端拆成多个模块后，漏一个文件不会让页面
+        # 打不开，只会让某块功能静默失效——所以这里顺着 import 把整张模块图走一遍，
+        # 而不只是确认首页引用的那几个文件在。
+        count = check_assets(port, html)
+        print(f'[smoke] 静态资源全部可用（{count} 个）', flush=True)
 
         # 接口可用性
         status, body = fetch(f'http://127.0.0.1:{port}/api/state')
