@@ -269,14 +269,16 @@ def resolve_paths(state):
     else:
         source, json_path, workshop_dir = 'none', '', ''
 
+    # 这些提示会原样显示在面板的提示条里，所以指向的必须是界面上真实存在的位置。
+    # 位置设置现在在导航栏的「设置」视图里（旧版是顶栏的「高级」抽屉，那个按钮已经没有了）。
     if source != 'none':
         hint = ''
     elif info['error']:
-        hint = '配置文件无法解析，请在「高级」中修正后保存'
+        hint = '配置文件无法解析，请在「设置」里修正后保存'
     elif not info['exists']:
-        hint = '还没设置 Wallpaper Engine 的位置，请点「高级」→「自动检测」'
+        hint = '还没设置 Wallpaper Engine 的位置，请到「设置」里点「自动检测」'
     else:
-        hint = '配置里的位置是空的，请到「高级」里填写'
+        hint = '配置里的位置是空的，请到「设置」里填写'
 
     return {
         'json_path': json_path,
@@ -804,6 +806,8 @@ class PanelHandler(BaseHTTPRequestHandler):
             'scan': state.last_scan,
             'active_job': active_job,
             'log_file': core.latest_log_file(),
+            # exe 旁边不可写时配置与日志会退回 %APPDATA%，界面上的「关于」要能说清这件事
+            'home_fallback': core.home_dir_fallback(),
             'recycle_supported': sys.platform == 'win32',
             'steam': state.steam_status(),
             'update': state.update_status(),
