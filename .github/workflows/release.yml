@@ -46,20 +46,30 @@ jobs:
           fi
           echo "版本号校验通过：$code_version"
 
-      - name: 打包 exe
+      - name: 打包 exe 与 zip
         run: python packaging/build.py --skip-deps --skip-tests --skip-smoke
 
+      # 冒烟测试直接吃 zip：测的就是要发出去的那个文件，解压之后才跑，
+      # 顺带验证"配置与日志落在 exe 旁边"这条发布形态
       - name: 冒烟测试
-        run: python packaging/smoke_test.py dist/wallpaper-cleaner.exe
+        shell: bash
+        run: |
+          set -e
+          zip_path=$(ls dist/wallpaper-cleaner-*.zip)
+          echo "测试产物：$zip_path"
+          python packaging/smoke_test.py "$zip_path"
 
       # 想给 exe 做代码签名的话，在这个位置插入签名步骤（需要准备证书，放在 secrets 里）。
-      # 必须排在「生成校验和」之前：签名会改动 exe 内容，先算校验和会得到与产物不匹配的
-      # SHA256SUMS.txt。未签名的 exe 用户首次运行会遇到 SmartScreen 提示。
+      # 注意顺序：签名必须在「打包 exe 与 zip」之前才有效（签的是 exe，不是 zip），
+      # 而校验和必须排在最后——它算的是最终发布出去的那个 zip 的哈希，
+      # 任何在它之后改动产物的步骤都会让 SHA256SUMS.txt 与产物对不上。
+      # 未签名的 exe 用户首次运行会遇到 SmartScreen 提示。
       - name: 生成校验和
         shell: bash
         run: |
           cd dist
-          sha256sum wallpaper-cleaner.exe > SHA256SUMS.txt
+          # 只对 zip 算：用户下载的是它，校验和也只应该指向它
+          sha256sum wallpaper-cleaner-*.zip > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: 上传构建产物
@@ -67,7 +77,7 @@ jobs:
         with:
           name: wallpaper-cleaner-windows
           path: |
-            dist/wallpaper-cleaner.exe
+            dist/wallpaper-cleaner-*.zip
             dist/SHA256SUMS.txt
           if-no-files-found: error
 
@@ -89,7 +99,7 @@ jobs:
           git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > RELEASE_NOTES.md
           # 走文件而不是 --notes "$notes"：长文本带换行经 MSYS 传参会踩路径转换的坑。
           gh release create "$GITHUB_REF_NAME" \
-            dist/wallpaper-cleaner.exe \
+            dist/wallpaper-cleaner-*.zip \
             dist/SHA256SUMS.txt \
             --title "wallpaper-cleaner $GITHUB_REF_NAME" \
             --notes-file RELEASE_NOTES.md

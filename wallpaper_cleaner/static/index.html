@@ -1,362 +1,441 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="__PANEL_THEME_VALUE__">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Wallpaper Cleaner</title>
+<!-- 面板 token 与版本号：以前是内联 <script>，那会逼着 CSP 放行 unsafe-inline，
+     等于把「注入脚本也读得到 token」这条路留着。改成 <meta> 后 script-src 只用 'self'。
+     占位符由 web.py 每次请求现替换，与 JS 变量名不同名，避免把变量名一起替换掉 -->
+<meta name="panel-token" content="__PANEL_TOKEN_VALUE__">
+<meta name="panel-version" content="__PANEL_VERSION_VALUE__">
 <!-- 与 exe 图标同造型（渐变圆角方块 + 闪光），内联免得额外的文件与接口 -->
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><defs><linearGradient id='g' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='%236aa9e0'/><stop offset='1' stop-color='%231c3854'/></linearGradient></defs><rect x='2' y='2' width='60' height='60' rx='14' fill='url(%23g)'/><path d='M32 12 L37 27 L52 32 L37 37 L32 52 L27 37 L12 32 L27 27 Z' fill='white'/></svg>">
-<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><defs><linearGradient id='g' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='%236fa8dc'/><stop offset='1' stop-color='%231b3f60'/></linearGradient></defs><rect x='2' y='2' width='60' height='60' rx='14' fill='url(%23g)'/><path d='M32 12 L37 27 L52 32 L37 37 L32 52 L27 37 L12 32 L27 27 Z' fill='white'/></svg>">
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/base.css">
+<link rel="stylesheet" href="/static/css/layout.css">
+<link rel="stylesheet" href="/static/css/components.css">
+<link rel="stylesheet" href="/static/css/views.css">
 </head>
 <body>
 
-<header class="topbar">
-  <div class="brand">
-    <span class="logo" aria-hidden="true"></span>
-    <div class="brand-text">
-      <h1>Wallpaper Cleaner</h1>
-      <p class="sub" id="config-line">正在检查…</p>
-    </div>
-  </div>
-  <div class="actions">
-    <button class="steam-badge unknown" id="steam-badge"
-      title="取消订阅 / 重新订阅需要 Steam 在运行，点这里检测">Steam 未检测 · 检测</button>
-    <button class="btn" id="btn-scan">重新扫描</button>
-    <button class="btn ghost" id="btn-advanced">高级</button>
-  </div>
-</header>
+<!-- 键盘用户的第一个落点：跳过导航栏与顶栏直接到内容。平时藏起来，获得焦点才出现 -->
+<a class="skip-link" href="#main">跳到主要内容</a>
 
-<main>
-  <div class="notice hidden" id="notice"></div>
+<div class="app">
 
-  <section class="stats">
-    <div class="stat">
-      <span class="stat-label">已订阅壁纸</span>
-      <strong class="stat-value" id="stat-subscribed">—</strong>
-      <span class="stat-foot" id="stat-missing"></span>
+  <!-- ====================================================================
+       导航栏
+       ==================================================================== -->
+  <aside class="rail" id="rail" data-state="expanded">
+    <div class="rail-brand">
+      <span class="rail-brand-mark" aria-hidden="true"></span>
+      <span class="rail-brand-name">Wallpaper Cleaner</span>
     </div>
-    <div class="stat">
-      <span class="stat-label">磁盘文件夹</span>
-      <strong class="stat-value" id="stat-folders">—</strong>
-      <span class="stat-foot" id="stat-scanned-at"></span>
-    </div>
-    <div class="stat">
-      <span class="stat-label">待清理</span>
-      <strong class="stat-value warn" id="stat-orphans">—</strong>
-      <span class="stat-foot" id="stat-unknown"></span>
-    </div>
-    <div class="stat">
-      <span class="stat-label">可释放空间</span>
-      <strong class="stat-value good" id="stat-freed">—</strong>
-      <span class="stat-foot">仅统计待清理目录</span>
-    </div>
-  </section>
 
-  <section class="card">
-    <div class="card-head">
-      <h2>待清理
-        <!-- 规则说明原先常驻在卡片头下面，一整段太长，收进弹窗按点列 -->
-        <button class="icon-btn help-btn" id="btn-orphan-help" type="button"
-          aria-label="待清理说明" title="待清理说明"><svg viewBox="0 0 24 24" fill="none"
-          stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"
-          aria-hidden="true"><circle cx="12" cy="12" r="9.1"/><path
-          d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg></button>
-        <span class="count" id="orphan-count">0</span>
-      </h2>
-      <div class="card-tools">
-        <label class="chk"><input type="checkbox" id="check-all"> 全选已取消订阅</label>
-        <button class="btn" id="btn-resubscribe" disabled>重新订阅选中</button>
-        <button class="btn danger" id="btn-delete" disabled>清理选中</button>
-      </div>
-    </div>
-    <div class="tablewrap" id="orphan-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th class="col-check"></th>
-            <th class="col-thumb">预览</th>
-            <th>workshop ID</th>
-            <th>标题</th>
-            <th class="col-kind">类型</th>
-            <th class="col-size col-declared" title="标注大小：Steam / Wallpaper Engine 记录里写的内容字节数，也就是「上次安装时多大」。作者更新后会更大，所以它不等于重新订阅需要下载的量；没有记录时显示「未知」">标注大小</th>
-            <!-- 只有「磁盘占用」这一列是按钮，别的列头保持静态文字：整片表头都可点
-                 会让人以为点哪儿都能排序 -->
-            <th class="col-size col-usage" aria-sort="none"
-              title="磁盘占用：按卷的簇大小对齐后的实际占用（每个子目录也算一个簇），接近资源管理器的「占用空间」；拿不到簇大小时退回文件字节数">
-              <button type="button" class="sort-btn" id="sort-orphan" data-mode="default"
-                title="按磁盘占用排序：大到小 → 小到大 → 恢复默认">磁盘占用<span class="sort-icon"
-                aria-hidden="true"></span></button>
-            </th>
-          </tr>
-        </thead>
-        <tbody id="orphan-body"></tbody>
-      </table>
-    </div>
-    <div class="empty hidden" id="orphan-empty"></div>
-  </section>
-
-  <section class="card">
-    <div class="card-head">
-      <button class="collapse-title" id="toggle-subscribed" aria-expanded="false">
-        <span class="chev" aria-hidden="true">▸</span>
-        <span>已订阅壁纸 <span class="count" id="sub-count">0</span></span>
+    <nav class="rail-nav" aria-label="主导航">
+      <button class="rail-item" type="button" data-view="orphans" aria-current="page">
+        <svg class="rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M11 4l1.7 4.6 4.6 1.7-4.6 1.7L11 16.6 9.3 12 4.7 10.3 9.3 8.6z"/>
+          <path d="M17.6 15l.7 1.9 1.9.7-1.9.7-.7 1.9-.7-1.9-1.9-.7 1.9-.7z"/>
+        </svg>
+        <span class="rail-label">待清理</span>
+        <span class="rail-badge" id="nav-count-orphans">0</span>
       </button>
-      <div class="card-tools">
-        <label class="chk"><input type="checkbox" id="check-all-sub"> 全选</label>
-        <button class="btn" id="btn-unsubscribe" disabled>取消订阅选中</button>
-      </div>
-    </div>
-    <div class="hidden" id="subscribed-body">
-      <div class="sub-tools">
-        <input type="search" class="search" id="sub-filter" placeholder="按 workshop ID 或标题筛选…">
-        <span class="sub-hint">点标题打开文件夹（没有标题的行点「打开目录」）</span>
-      </div>
-      <div class="tablewrap" id="sub-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th class="col-check"></th>
-              <th class="col-thumb">预览</th>
-              <th>workshop ID</th>
-              <th>标题</th>
-              <th class="col-size col-declared" title="标注大小：Steam / Wallpaper Engine 记录里写的内容字节数（Steam 内容记录优先，其次 WE 缓存里的标注），没有记录时显示「未知」">标注大小</th>
-              <th class="col-size col-usage" aria-sort="none"
-                title="磁盘占用：按卷的簇大小对齐后的实际占用（每个子目录也算一个簇），接近资源管理器的「占用空间」；拿不到簇大小时退回文件字节数">
-                <button type="button" class="sort-btn" id="sort-sub" data-mode="default"
-                  title="按磁盘占用排序：大到小 → 小到大 → 恢复默认">磁盘占用<span class="sort-icon"
-                  aria-hidden="true"></span></button>
-              </th>
-            </tr>
-          </thead>
-          <tbody id="sub-body"></tbody>
-        </table>
-      </div>
-      <div class="empty hidden" id="sub-empty"></div>
-    </div>
-  </section>
-</main>
 
-<!-- 任务进度 -->
-<div class="overlay hidden" id="progress-overlay">
-  <div class="dialog">
-    <h3 id="progress-title">正在执行…</h3>
+      <button class="rail-item" type="button" data-view="subscribed">
+        <svg class="rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 3l8 4.5-8 4.5-8-4.5z"/>
+          <path d="M4 12l8 4.5 8-4.5"/>
+          <path d="M4 16.5l8 4.5 8-4.5"/>
+        </svg>
+        <span class="rail-label">已订阅</span>
+        <span class="rail-badge" id="nav-count-subscribed">0</span>
+      </button>
+
+      <button class="rail-item" type="button" data-view="settings">
+        <svg class="rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M4 7h9M18.5 7H20M4 17h2.5M11.5 17H20"/>
+          <circle cx="15.5" cy="7" r="2.2"/>
+          <circle cx="8.5" cy="17" r="2.2"/>
+        </svg>
+        <span class="rail-label">设置</span>
+      </button>
+    </nav>
+
+    <div class="rail-foot">
+      <span class="rail-version" id="rail-version">v0.0.0</span>
+      <button class="btn icon rail-collapse" id="btn-rail-toggle" type="button"
+        title="收起导航栏" aria-label="收起导航栏" aria-expanded="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="4" width="18" height="16" rx="3"/>
+          <path d="M9 4v16M16 9.5l-3 2.5 3 2.5"/>
+        </svg>
+      </button>
+    </div>
+  </aside>
+
+  <!-- ====================================================================
+       主区
+       ==================================================================== -->
+  <div class="main">
+
+    <header class="topbar">
+      <div class="topbar-heading">
+        <h1 class="topbar-title" id="view-title">待清理</h1>
+        <p class="topbar-sub" id="path-line">正在检查…</p>
+      </div>
+      <div class="topbar-actions">
+        <button class="steam" id="steam-badge" type="button"
+          title="取消订阅与重新订阅需要 Steam 在运行，点这里检测">
+          <span class="steam-dot" aria-hidden="true"></span>
+          <span id="steam-label">Steam 未检测</span>
+        </button>
+        <button class="btn" id="btn-scan" type="button">重新扫描</button>
+        <button class="btn icon" id="btn-theme" type="button"></button>
+      </div>
+    </header>
+
+    <!-- 后端失联 / 令牌失效：这两条必须比内容显眼，所以各占一行 -->
+    <div class="banner hidden" id="banner-conn" role="alert">
+      <span class="banner-text" id="banner-conn-text">与面板后端失去连接</span>
+      <button class="btn ghost" id="btn-reconnect" type="button">立即重试</button>
+    </div>
+    <div class="banner hidden" id="banner-token" role="alert">
+      <span class="banner-text">面板程序已重新启动，本页面的访问令牌已失效。刷新后即可继续操作。</span>
+      <button class="btn ghost" id="btn-reload" type="button">刷新页面</button>
+    </div>
+
+    <!-- 数字条与当前视图的动作同处一行：左边回答"现在什么情况"，
+         右边回答"那我能做什么"，两件事挨着才读得顺 -->
+    <div class="toolbar">
+      <div class="statbar">
+        <div class="stat secondary">
+          <span class="stat-label">已订阅</span>
+          <strong class="stat-value" id="stat-subscribed">0</strong>
+        </div>
+        <div class="stat secondary">
+          <span class="stat-label">磁盘文件夹</span>
+          <strong class="stat-value" id="stat-folders">0</strong>
+        </div>
+        <div class="stat primary">
+          <span class="stat-label">待清理</span>
+          <strong class="stat-value warn" id="stat-orphans">0</strong>
+        </div>
+        <div class="stat primary">
+          <span class="stat-label">可释放</span>
+          <strong class="stat-value good" id="stat-freed">0 B</strong>
+        </div>
+      </div>
+
+      <!-- 两组动作按钮按视图切换显隐，见 views.css 与 views/nav.js -->
+      <div class="toolbar-actions" id="toolbar-actions">
+        <label class="check" id="orphan-select-all-wrap">
+          <input type="checkbox" id="check-all"> 全选已取消订阅
+        </label>
+        <button class="btn" id="btn-resubscribe" type="button" disabled>重新订阅选中</button>
+        <button class="btn danger" id="btn-delete" type="button" disabled>清理选中</button>
+
+        <label class="check hidden" id="sub-select-all-wrap">
+          <input type="checkbox" id="check-all-sub"> 全选
+        </label>
+        <button class="btn danger hidden" id="btn-unsubscribe" type="button" disabled>取消订阅选中</button>
+      </div>
+    </div>
+
+    <main class="content" id="main">
+      <div class="notice hidden" id="notice"></div>
+      <section class="result hidden" id="result" tabindex="-1" aria-labelledby="result-title"></section>
+
+      <!-- ---------- 视图：待清理 ---------- -->
+      <section class="view is-active" id="view-orphans" data-view="orphans" aria-label="待清理">
+        <div class="table-wrap" id="orphan-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th class="col-check"></th>
+                <th class="col-thumb">预览</th>
+                <th class="col-id">workshop ID</th>
+                <th>标题</th>
+                <th class="col-kind">类型</th>
+                <th class="col-size col-declared" aria-describedby="help-columns"
+                  title="Wallpaper Engine 记录的下载大小，与实际占用不一定一致">标注大小</th>
+                <th class="col-size" aria-sort="none" aria-describedby="help-columns"
+                  title="文件在磁盘上的实际占用，也就是删掉后真正腾出来的量">
+                  <button type="button" class="sort-btn" id="sort-orphan" data-mode="default"
+                    title="按磁盘占用排序：大到小，小到大，恢复默认">磁盘占用<span class="sort-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M6 13l6 6 6-6"/></svg></span></button>
+                </th>
+              </tr>
+            </thead>
+            <tbody id="orphan-body"></tbody>
+          </table>
+        </div>
+        <div class="empty hidden" id="orphan-empty"></div>
+      </section>
+
+      <!-- ---------- 视图：已订阅 ---------- -->
+      <section class="view" id="view-subscribed" data-view="subscribed" aria-label="已订阅">
+        <div class="view-tools">
+          <span class="view-hint">点标题在资源管理器中打开该壁纸的文件夹</span>
+          <div class="search-wrap">
+            <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="7"/><path d="M20 20l-3.6-3.6"/>
+            </svg>
+            <input type="search" class="input" id="sub-filter" placeholder="按 workshop ID 或标题筛选"
+              aria-label="筛选已订阅壁纸">
+          </div>
+        </div>
+        <div class="table-wrap" id="sub-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th class="col-check"></th>
+                <th class="col-thumb">预览</th>
+                <th class="col-id">workshop ID</th>
+                <th>标题</th>
+                <th class="col-size col-declared" aria-describedby="help-columns"
+                  title="Wallpaper Engine 记录的下载大小，与实际占用不一定一致">标注大小</th>
+                <th class="col-size" aria-sort="none" aria-describedby="help-columns"
+                  title="文件在磁盘上的实际占用，也就是删掉后真正腾出来的量">
+                  <button type="button" class="sort-btn" id="sort-sub" data-mode="default"
+                    title="按磁盘占用排序：大到小，小到大，恢复默认">磁盘占用<span class="sort-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M6 13l6 6 6-6"/></svg></span></button>
+                </th>
+              </tr>
+            </thead>
+            <tbody id="sub-body"></tbody>
+          </table>
+        </div>
+        <div class="empty hidden" id="sub-empty"></div>
+      </section>
+
+      <!-- ---------- 视图：设置 ---------- -->
+      <section class="view" id="view-settings" data-view="settings" aria-label="设置">
+        <div class="settings">
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2 class="panel-title">位置设置</h2>
+            </div>
+            <label class="field">
+              <span>workshopcache.json 路径</span>
+              <input type="text" class="input" id="input-json" spellcheck="false"
+                autocomplete="off" placeholder="D:\Steam\steamapps\workshop\appworkshop_431960.json">
+            </label>
+            <label class="field">
+              <span>workshop 内容目录</span>
+              <input type="text" class="input" id="input-workshop" spellcheck="false"
+                autocomplete="off" placeholder="D:\Steam\steamapps\workshop\content\431960">
+            </label>
+            <p class="hint">留空会自动检测。改了路径后需要重新扫描才会生效。</p>
+            <div class="panel-actions">
+              <button class="btn ghost" id="btn-autodetect" type="button">自动检测</button>
+              <button class="btn primary" id="btn-save-config" type="button">保存</button>
+            </div>
+            <div class="notice hidden" id="autodetect-result"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2 class="panel-title">关于</h2>
+            </div>
+            <dl class="meta-list">
+              <dt>版本</dt><dd id="about-version">0.0.0</dd>
+              <dt>配置文件</dt><dd id="about-config"></dd>
+              <dt>日志目录</dt><dd id="about-logs"></dd>
+              <dt>更新状态</dt><dd id="about-update"></dd>
+            </dl>
+            <p class="notice warn hidden" id="about-fallback">
+              <span class="notice-text">exe 所在目录不可写，配置与日志已改放到上面显示的目录。
+                想让它跟着 exe 走，把 exe 换到一个可写的文件夹里再启动。</span>
+            </p>
+            <div class="panel-actions">
+              <button class="btn ghost" id="btn-check-update" type="button">检查更新</button>
+              <button class="btn ghost" id="btn-open-repo" type="button">GitHub 仓库</button>
+            </div>
+          </section>
+
+          <section class="panel panel-log">
+            <div class="panel-head">
+              <h2 class="panel-title">运行日志</h2>
+              <label class="check"><input type="checkbox" id="opt-log-auto" checked> 自动刷新</label>
+            </div>
+            <p class="hint" id="logs-meta">载入中…</p>
+            <pre class="log" id="logs-body"></pre>
+          </section>
+
+        </div>
+      </section>
+    </main>
+
+    <footer class="statusbar">
+      <div class="bar hidden" id="status-progress">
+        <div class="bar-fill" id="status-progress-fill"></div>
+      </div>
+      <div class="statusbar-row">
+        <span class="statusbar-text" id="status-text">就绪</span>
+        <div class="statusbar-right">
+          <span id="status-count"></span>
+          <button class="statusbar-link hidden" id="btn-status-log" type="button">查看日志</button>
+        </div>
+      </div>
+    </footer>
+  </div>
+</div>
+
+<!-- ======================================================================
+     弹窗
+     ======================================================================
+     全部用原生 <dialog>：焦点陷阱、top-layer、Esc 关闭、背景 inert 都由浏览器
+     负责，不必自己写（自己写的那套出过"关掉弹窗后页面整体点不动"的 bug）。 -->
+
+<dialog class="dialog" id="dlg-progress" aria-labelledby="dlg-progress-title">
+  <div class="dialog-inner">
+    <h3 class="dialog-title" id="dlg-progress-title">正在执行</h3>
     <div class="bar"><div class="bar-fill" id="progress-bar"></div></div>
-    <p class="progress-meta"><span id="progress-message">准备中…</span><span id="progress-count">0 / 0</span></p>
-    <pre class="joblog" id="progress-log"></pre>
-  </div>
-</div>
-
-<!-- 清理确认 -->
-<div class="overlay hidden" id="confirm-overlay">
-  <div class="dialog">
-    <h3>确认清理</h3>
-    <p class="dialog-lead">
-      即将清理 <strong id="confirm-count">0</strong> 个文件夹，释放约
-      <strong id="confirm-size">0 B</strong>：
-    </p>
-    <ul class="confirm-list" id="confirm-list"></ul>
-    <label class="chk recycle" id="recycle-row">
-      <input type="checkbox" id="opt-recycle" checked>
-      <span>删除到回收站（可恢复）</span>
-    </label>
-    <p class="warn-text hidden" id="permanent-warning">
-      ⚠ 已关闭回收站：这些文件将被永久删除，无法恢复。
-    </p>
+    <p class="dialog-lead"><span id="progress-message">准备中</span> <strong id="progress-count"></strong></p>
+    <pre class="log" id="progress-log"></pre>
     <div class="dialog-actions">
-      <button class="btn ghost" id="btn-cancel-delete">取消</button>
-      <button class="btn danger" id="btn-confirm-delete">确认清理</button>
+      <button class="btn ghost hidden" id="btn-progress-close" type="button">在后台继续</button>
     </div>
   </div>
-</div>
+</dialog>
 
-<!-- 取消订阅确认 -->
-<div class="overlay hidden" id="unsub-overlay">
-  <div class="dialog">
-    <h3>取消订阅</h3>
-    <p class="dialog-lead">
-      即将对 <strong id="unsub-count">0</strong> 张壁纸取消订阅，共
-      <strong id="unsub-size">0 B</strong>：
-    </p>
-    <ul class="confirm-list" id="unsub-list"></ul>
+<dialog class="dialog" id="dlg-confirm" aria-labelledby="dlg-confirm-title">
+  <div class="dialog-inner">
+    <h3 class="dialog-title" id="dlg-confirm-title">确认清理</h3>
+    <p class="dialog-lead">将清理 <strong id="confirm-count">0</strong> 个文件夹，可释放 <strong id="confirm-size">0 B</strong>。</p>
+    <div class="dialog-body">
+      <ul class="pick-list" id="confirm-list"></ul>
+      <label class="check"><input type="checkbox" id="opt-recycle" checked> 移入回收站（之后可从回收站还原）</label>
+      <p class="warn-text hidden" id="permanent-warning">已关闭回收站，删除后无法恢复。</p>
+    </div>
+    <div class="dialog-actions">
+      <button class="btn ghost" id="btn-cancel-delete" type="button">取消</button>
+      <button class="btn danger" id="btn-confirm-delete" type="button">确认清理</button>
+    </div>
+  </div>
+</dialog>
 
-    <label class="chk mode" id="mode-only-row">
-      <input type="radio" name="unsub-mode" id="mode-only" checked>
-      <span>仅取消订阅
-        <span class="mode-note">本工具不主动删本地文件。Steam 客户端通常会在取消订阅后自行删除它们，
-          留下来的残留可以在下次扫描后清理。</span></span>
-    </label>
-    <label class="chk mode" id="mode-delete-row">
-      <input type="radio" name="unsub-mode" id="mode-delete">
-      <span>取消订阅并删除文件
-        <span class="mode-note">确保空间立刻释放。删除后本工具无法一键找回，
-          需要到 Steam 创意工坊重新订阅并重新下载。</span></span>
-    </label>
-
-    <div class="hidden" id="unsub-delete-options">
-      <label class="chk recycle" id="unsub-recycle-row">
-        <input type="checkbox" id="opt-unsub-recycle" checked>
-        <span>删除到回收站（可恢复）</span>
+<dialog class="dialog" id="dlg-unsub" aria-labelledby="dlg-unsub-title">
+  <div class="dialog-inner">
+    <h3 class="dialog-title" id="dlg-unsub-title">取消订阅</h3>
+    <p class="dialog-lead">将对 <strong id="unsub-count">0</strong> 项取消订阅。</p>
+    <div class="dialog-body">
+      <ul class="pick-list" id="unsub-list"></ul>
+      <label class="mode-card">
+        <input type="radio" name="unsub-mode" id="mode-only" value="only" checked>
+        <span class="mode-card-body">
+          <span class="mode-card-title">仅取消订阅</span>
+          <span class="mode-card-note">保留磁盘上的文件，之后还能重新订阅找回来。</span>
+        </span>
       </label>
-      <p class="warn-text hidden" id="unsub-permanent-warning">
-        ⚠ 已关闭回收站：这些文件将被永久删除，无法恢复。
-      </p>
+      <label class="mode-card">
+        <input type="radio" name="unsub-mode" id="mode-delete" value="with_delete">
+        <span class="mode-card-body">
+          <span class="mode-card-title">取消订阅并删除文件</span>
+          <span class="mode-card-note">同时释放磁盘空间，需要 Steam 在运行。</span>
+        </span>
+      </label>
+      <div class="stack hidden" id="unsub-delete-options">
+        <label class="check"><input type="checkbox" id="opt-unsub-recycle" checked> 移入回收站（之后可从回收站还原）</label>
+        <p class="warn-text hidden" id="unsub-permanent-warning">已关闭回收站，删除后无法恢复。</p>
+      </div>
     </div>
-
     <div class="dialog-actions">
-      <button class="btn ghost" id="btn-cancel-unsub">取消</button>
-      <button class="btn" id="btn-confirm-unsub">确认取消订阅</button>
+      <button class="btn ghost" id="btn-cancel-unsub" type="button">取消</button>
+      <button class="btn danger" id="btn-confirm-unsub" type="button">确认取消订阅</button>
     </div>
   </div>
-</div>
+</dialog>
 
-<!-- 重新订阅确认 -->
-<div class="overlay hidden" id="resub-overlay">
-  <div class="dialog">
-    <h3>重新订阅</h3>
-    <p class="dialog-lead">
-      即将重新订阅 <strong id="resub-count">0</strong> 张壁纸：
-    </p>
-    <ul class="confirm-list" id="resub-list"></ul>
-    <p class="dialog-lead">
-      Steam 会把内容重新下载回本地（需要联网并占用磁盘空间）。
-      文件还在本地的通常不必整包重下，但具体由 Steam 决定。
-    </p>
+<dialog class="dialog" id="dlg-resub" aria-labelledby="dlg-resub-title">
+  <div class="dialog-inner">
+    <h3 class="dialog-title" id="dlg-resub-title">重新订阅</h3>
+    <p class="dialog-lead">将重新订阅 <strong id="resub-count">0</strong> 项，Steam 会重新下载它们的文件。</p>
+    <div class="dialog-body">
+      <ul class="pick-list" id="resub-list"></ul>
+      <p class="hint">文件较大的项目下载需要一些时间，期间可以继续用这个面板。</p>
+    </div>
     <div class="dialog-actions">
-      <button class="btn ghost" id="btn-cancel-resub">取消</button>
-      <button class="btn" id="btn-confirm-resub">确认重新订阅</button>
+      <button class="btn ghost" id="btn-cancel-resub" type="button">取消</button>
+      <button class="btn primary" id="btn-confirm-resub" type="button">确认重新订阅</button>
     </div>
   </div>
-</div>
+</dialog>
 
-<!-- 连接 Steam 的引导：连不上时不丢一句报错，而是说清原因与下一步 -->
-<div class="overlay hidden" id="steam-overlay">
-  <div class="dialog">
-    <h3>需要连接 Steam</h3>
-    <p class="dialog-lead">
-      取消订阅与重新订阅走的是 Steam 官方接口，效果等同于你在 Steam 客户端里点一下，
-      因此需要 Steam 正在运行。本工具不会接触你的账号密码，也不修改任何游戏文件。
-    </p>
-    <div class="notice warn" id="steam-reason-box">
-      <span id="steam-reason">Steam 当前不可用</span>
+<dialog class="dialog" id="dlg-steam" aria-labelledby="dlg-steam-title">
+  <div class="dialog-inner">
+    <h3 class="dialog-title" id="dlg-steam-title">需要连接 Steam</h3>
+    <p class="dialog-lead" id="steam-reason">取消订阅与重新订阅都要通过 Steam 客户端完成。</p>
+    <div class="notice warn hidden" id="steam-detail-box">
+      <span class="notice-text" id="steam-detail"></span>
     </div>
-    <p class="meta hidden" id="steam-detail"></p>
-    <ol class="guide-steps">
-      <li>启动 Steam 客户端并登录</li>
-      <li>保持客户端在运行，回到本页点「重新检测」</li>
-      <li>本工具用 Wallpaper Engine 自带的 steam_api64.dll 连接 Steam；那份不可用时，
-        才会退而使用本机其它 Steam 游戏自带的版本</li>
+    <ol class="steps">
+      <li>打开 Steam 并登录你的账号</li>
+      <li>保持 Steam 在后台运行（可以最小化，不必打开界面）</li>
+      <li>回到这里点「重新检测」</li>
     </ol>
     <div class="dialog-actions">
-      <button class="btn ghost hidden" id="btn-steam-manual">在 Steam 中手动操作</button>
-      <button class="btn ghost" id="btn-steam-launch">启动 Steam</button>
-      <button class="btn" id="btn-steam-retry">重新检测</button>
+      <button class="btn ghost hidden" id="btn-steam-manual" type="button">在 Steam 中手动操作</button>
+      <button class="btn ghost" id="btn-steam-launch" type="button">启动 Steam</button>
+      <button class="btn primary" id="btn-steam-retry" type="button">重新检测</button>
     </div>
   </div>
-</div>
+</dialog>
 
-<!-- 「待清理」的规则说明：文字与原先卡片头下面那段常驻提示一致，只是按点拆开 -->
-<div class="overlay hidden" id="orphan-help-overlay">
-  <div class="dialog">
-    <h3>关于「待清理」</h3>
-    <ul class="help-list">
-      <li>只清理<strong>已取消订阅</strong>的壁纸残留，正在使用的壁纸不会被触碰。</li>
-      <li>标记为 <span class="badge unknown">无法确定的文件夹</span> 的来源不明，默认不勾选，需要时请手动勾选。</li>
-      <li><span class="badge missing">内容已缺失</span> 表示目录里已经没有作者发布的 <code>project.json</code>
-        （内容可能已被 Steam 清理，只剩缓存文件），这类行的标题会显示为「打开目录」。</li>
-      <li>标题列本身就是打开目录的入口，没有标题的行也一样可点，
-        点它可以在资源管理器里打开该目录。</li>
-      <li>两个尺寸列分别是：「标注大小」是 Steam / WE 记录里写的内容大小（没有记录时显示「未知」），
-        「磁盘占用」是按簇对齐后的实际占用，也就是删掉后真正腾出来的量。</li>
-      <li>想把某张壁纸重新订阅回来，勾选它再点「重新订阅选中」，Steam 会自动下载回本地。</li>
-    </ul>
+<dialog class="dialog" id="dlg-help" aria-labelledby="dlg-help-title">
+  <div class="dialog-inner">
+    <h3 class="dialog-title" id="dlg-help-title">关于「待清理」</h3>
+    <div class="dialog-body">
+      <p class="dialog-lead">这一列里出现的是磁盘上存在、但已经不在你的订阅列表里的壁纸文件夹。</p>
+      <ul class="help-list">
+        <li><strong>已取消订阅</strong>：Wallpaper Engine 的缓存记录里还能查到它，可以重新订阅找回，也可以直接清理。</li>
+        <li><strong>无法确定的文件夹</strong>：缓存里查不到记录，可能是别的工具放进去的，也可能是手动创建的。
+          这类文件夹不会被「全选已取消订阅」勾中，需要你逐个确认后再手动勾选。</li>
+        <li>如果文件夹里没有 <code>project.json</code>，会额外标出「内容已缺失」，说明它已经不完整了。</li>
+        <li id="help-columns"><strong>两个大小不一样</strong>：
+          <ul>
+            <li><strong>标注大小</strong>是 Wallpaper Engine 记录在缓存里的下载大小。</li>
+            <li><strong>磁盘占用</strong>是文件在磁盘上实际占的位置，也是清理后真正腾出来的量。</li>
+            <li>两者不一致是正常的：缓存里的记录可能过时，磁盘占用还包含簇对齐的开销。</li>
+          </ul>
+        </li>
+        <li>清理默认移入回收站，之后还能从回收站还原。关闭回收站选项后删除不可恢复。</li>
+      </ul>
+    </div>
     <div class="dialog-actions">
-      <button class="btn ghost" id="btn-close-orphan-help">知道了</button>
+      <button class="btn primary" id="btn-close-help" type="button">知道了</button>
     </div>
   </div>
-</div>
+</dialog>
 
-<!-- 发现新版本：检查更新查出有更新的版本时弹出来，更新说明按纯文本显示（不渲染 Markdown） -->
-<div class="overlay hidden" id="update-overlay">
-  <div class="dialog">
-    <h3>发现新版本</h3>
-    <p class="dialog-lead">
-      新版本 <strong id="update-latest">—</strong>，当前版本 <strong id="update-current">—</strong>。
-    </p>
-    <p class="meta" id="update-published"></p>
-    <pre class="joblog" id="update-notes"></pre>
+<dialog class="dialog" id="dlg-update" aria-labelledby="dlg-update-title">
+  <div class="dialog-inner">
+    <h3 class="dialog-title" id="dlg-update-title">发现新版本</h3>
+    <dl class="meta-list">
+      <dt>最新版本</dt><dd id="update-latest"></dd>
+      <dt>当前版本</dt><dd id="update-current"></dd>
+      <dt>发布时间</dt><dd id="update-published"></dd>
+    </dl>
+    <pre class="log" id="update-notes"></pre>
     <div class="dialog-actions">
-      <button class="btn ghost" id="btn-cancel-update">稍后</button>
-      <button class="btn" id="btn-goto-release">前往 GitHub 下载</button>
+      <button class="btn ghost" id="btn-update-later" type="button">稍后</button>
+      <button class="btn primary" id="btn-update-goto" type="button">前往下载</button>
     </div>
   </div>
-</div>
+</dialog>
 
-<!-- 高级：位置设置 / 运行日志 / 关于 -->
-<aside class="drawer wide hidden" id="advanced-drawer">
-  <header class="drawer-head">
-    <h3>高级</h3>
-    <button class="icon-btn" data-close="advanced-drawer" aria-label="关闭">✕</button>
-  </header>
-  <div class="drawer-body">
+<div class="toasts" id="toasts"></div>
 
-    <section class="drawer-section">
-      <h4>位置设置</h4>
-      <label class="field">
-        <span>workshopcache.json 路径</span>
-        <input type="text" id="input-json" spellcheck="false" autocomplete="off"
-               placeholder="D:\Steam\steamapps\common\wallpaper_engine\bin\workshopcache.json">
-      </label>
-      <label class="field">
-        <span>workshop 内容目录</span>
-        <input type="text" id="input-workshop" spellcheck="false" autocomplete="off"
-               placeholder="D:\Steam\steamapps\workshop\content\431960">
-      </label>
-      <p class="hint">
-        支持绝对路径与相对路径（相对路径基于配置所在目录）。保存时会保留配置文件中的注释。
-      </p>
-      <div class="drawer-actions">
-        <button class="btn ghost" id="btn-autodetect">自动检测</button>
-        <button class="btn" id="btn-save-config">保存</button>
-      </div>
-      <div class="notice hidden" id="autodetect-result"></div>
-      <p class="meta" id="settings-meta"></p>
-    </section>
-
-    <section class="drawer-section">
-      <div class="drawer-section-head">
-        <h4>运行日志</h4>
-        <label class="chk"><input type="checkbox" id="opt-log-auto" checked> 自动刷新</label>
-      </div>
-      <p class="meta" id="logs-meta">—</p>
-      <pre class="joblog tall" id="logs-body">载入中…</pre>
-    </section>
-
-    <section class="drawer-section">
-      <h4>关于</h4>
-      <p class="meta" id="about-version">—</p>
-      <p class="meta" id="about-config">—</p>
-      <p class="meta" id="about-logs">—</p>
-      <p class="meta" id="about-update">—</p>
-      <div class="drawer-actions">
-        <button class="btn ghost" id="btn-check-update">检查更新</button>
-        <button class="btn ghost" id="btn-open-repo">GitHub 仓库</button>
-      </div>
-    </section>
-
-  </div>
-</aside>
-
-<div class="toast hidden" id="toast"></div>
-
-<!-- 放大看预览图 -->
-<div class="lightbox hidden" id="lightbox">
+<div class="lightbox hidden" id="lightbox" role="dialog" aria-modal="true" aria-label="预览图">
   <img id="lightbox-img" alt="">
 </div>
 
-<script>
-  window.__PANEL_TOKEN__ = "__PANEL_TOKEN_VALUE__";
-  window.__PANEL_VERSION__ = "__PANEL_VERSION_VALUE__";
-</script>
-<script src="/static/app.js"></script>
+<script type="module" src="/static/js/main.js"></script>
 </body>
 </html>

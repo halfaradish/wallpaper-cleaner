@@ -1,0 +1,186 @@
+/* 基线：重置、排版默认值、焦点、滚动条、噪点、无障碍适配 */
+
+* { box-sizing: border-box; }
+
+/* html 上不能设 font-size：rem 的基准就是它，一旦在这里写成 0.875rem，
+   它会先按浏览器默认值（16px）解析成 14px，之后全站每一个 rem 都变成 14 的倍数——
+   正文的 0.875rem 就成了 12.25px，整套字号标度集体缩水 12.5%。
+   基准留给浏览器默认值，字号只在 body 上设。 */
+html, body {
+  height: 100%;
+  margin: 0;
+}
+
+/* 面板不整页滚动：外壳固定成窗口大小，只有内容区内部滚。
+   这是桌面工具该有的行为——整页滚动时，顶栏、导航栏和表头都会跟着走，
+   在 560px 高的窗口里尤其难用。 */
+body {
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--fs-base);
+  line-height: var(--lh-base);
+  -webkit-font-smoothing: antialiased;
+  text-underline-offset: 0.2em;
+}
+
+/* 噪点：纯平的大色块看着像没画完，一层极淡的噪点就够。
+   必须是固定层且不吃点击，浅色主题与强制颜色模式下关掉（见文件末尾）。 */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: var(--grain-opacity);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* 整个应用外壳压在噪点之上。一条规则搞定，不必逐个容器去抬层级 */
+.app { position: relative; z-index: 1; }
+
+h1, h2, h3, h4 {
+  margin: 0;
+  font-weight: 600;
+  letter-spacing: var(--track-tight);
+  /* 中文标题断行更自然，也避免最后一行只剩一两个字 */
+  text-wrap: pretty;
+}
+
+code, kbd {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--surface-3);
+  padding: 0.1em 0.35em;
+  border-radius: var(--r-xs);
+  color: var(--text-dim);
+}
+
+.hidden { display: none !important; }
+
+/* 屏幕阅读器专用：给只有图标或只有颜色的元素补一句可读的名字 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---------- 数字：全站等宽 ----------
+   比例数字在数值变化时宽度会跳（1 比 8 窄），统计数字滚动、进度百分比刷新、
+   文件大小排序时整列都会跟着抖。等宽数字把这整类抖动一次性去掉。 */
+.num, .stat-value, td.col-size, .wid, .rail-badge, .bar-count, .log {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 标签：全站统一的小标题样式 ----------
+   不用 text-transform: uppercase：界面上这些标签（预览、标题、类型、位置设置）
+   全是中文，uppercase 对汉字没有任何效果，真正落地的只有字距——汉字被拉得比
+   设计意图松。语义交给 font-weight 与颜色表达。 */
+.label {
+  font-size: var(--fs-label);
+  font-weight: 500;
+  letter-spacing: var(--track-label);
+  color: var(--muted);
+}
+
+/* ---------- 焦点 ----------
+   键盘用户唯一的方位感来源。只在 :focus-visible 上画，鼠标点击不会闪圈。
+   用 outline 而不是 box-shadow：outline 不参与布局，也不会被 overflow 裁掉。 */
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--r-xs);
+}
+
+/* ---------- 滚动条 ----------
+   轨道透明，让面板底色直接透出来；滑块用 border + background-clip 做内缩，
+   比给轨道填色干净得多，也不需要在两套主题里各调一次。 */
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+  border-radius: var(--r-full);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); background-clip: padding-box; }
+::-webkit-scrollbar-corner { background: transparent; }
+
+/* ---------- 动效偏好 ----------
+   系统里关了动画就全部关掉，但状态变化本身要保留（进度条仍要走，只是不走过渡）。
+   1ms 而不是 0：某些浏览器会跳过 0 时长的 transition 事件，而 Toast 的离场
+   依赖 animationend（另有超时兜底，但能少一条兜底就少一条）。
+
+   animation-delay 也必须清零：错峰入场是 animation-delay 驱动的，只把时长压到
+   1ms 的话，第 12 行仍要等 264ms 才出现——那时序仍然在"动"，只是动得看不见。 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 1ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+  body::before { opacity: 0; }
+}
+
+/* ---------- 强制颜色模式（Windows 高对比度） ----------
+   这是本工具最要紧的一条包容性适配：勾选框与单选框是 appearance:none 自绘的，
+   在强制颜色模式下自绘的边框和底色会被系统抹掉，控件变成看不见的空框——
+   而"看不见勾选框"意味着整个清理流程没法用。
+
+   对策：把自绘的形状交还给系统色（CanvasText 画边框、Highlight 画选中），
+   去掉一切装饰（噪点、渐变、阴影、半透明底色）。 */
+@media (forced-colors: active) {
+  /* 装饰一律去掉：系统会用自己的配色，渐变与阴影只会糊成一片 */
+  body::before { opacity: 0; }
+  .logo, .rail-brand-mark { background: CanvasText; box-shadow: none; }
+  .logo::after { background: Canvas; }
+  .topbar, .rail, .statusbar, .card, .statbar, .dialog, .toast, .banner {
+    background: Canvas;
+    backdrop-filter: none;
+    box-shadow: none;
+  }
+  .bar, .stat-meter { border: 1px solid CanvasText; background: Canvas; }
+  .bar-fill, .stat-meter-fill { background: Highlight; }
+  .skeleton { background: Canvas; border: 1px solid CanvasText; }
+  .skeleton::after { display: none; }
+
+  /* 自绘控件的可见性：强制颜色下必须重新描边，否则是空的 */
+  input[type="checkbox"],
+  input[type="radio"] {
+    border: 1px solid CanvasText;
+    background: Canvas;
+  }
+  input[type="checkbox"]:checked,
+  input[type="radio"]:checked {
+    border-color: Highlight;
+    background: Highlight;
+  }
+  /* 勾与圆点用系统的高亮文字色画，保证与高亮底色有对比 */
+  input[type="checkbox"]:checked::after { border-color: HighlightText; }
+  input[type="radio"]:checked::after { background: HighlightText; }
+  input[type="checkbox"]:disabled,
+  input[type="radio"]:disabled { border-color: GrayText; }
+
+  /* 焦点环交给系统色：--focus-ring 在强制颜色下会被忽略 */
+  :focus-visible { outline-color: Highlight; }
+
+  /* 状态不只靠颜色：强制颜色会把所有色相压成同一个系统色，
+     徽章与选中行必须靠边框与形状区分开 */
+  .badge { border-color: CanvasText; }
+  .badge.unknown { border-style: dashed; }
+  tbody tr.selected { background: Highlight; color: HighlightText; }
+  tbody tr.selected td:first-child { box-shadow: inset 3px 0 0 HighlightText; }
+  .btn, .rail-item { border: 1px solid CanvasText; }
+  .rail-item[aria-current="page"] { border-color: Highlight; }
+  .title-text { text-decoration-color: CanvasText; }
+}

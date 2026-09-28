@@ -1265,5 +1265,86 @@ class TestLogTail(SandboxTestCase):
         self.assertEqual(tail['lines'], [])
 
 
+class TestAppHomeDir(unittest.TestCase):
+    """配置目录的决定逻辑：源码运行 / 打包运行 / 不可写退回 / 环境变量覆盖
+
+    这四种情形决定了用户的 config.yml 与 logs/ 到底落在哪，而它们的分支彼此互斥，
+    只靠手动跑一遍 exe 最多只能覆盖其中一种。
+    """
+
+    def setUp(self):
+        # _home_cache 是进程内缓存（可写性探测要真写文件，不该每次问都探一遍），
+        # 所以每个用例前后都要清掉它，否则前一个用例的结果会漏进来
+        self._saved_cache = core._home_cache
+        core._home_cache = None
+        self.tmp = tempfile.mkdtemp(prefix='wc-home-')
+
+    def tearDown(self):
+        core._home_cache = self._saved_cache
+        rmtree(self.tmp)
+
+    def _with_frozen(self, exe_path, appdata, writable):
+        return (
+            mock.patch.object(core, 'is_frozen', return_value=True),
+            mock.patch.object(sys, 'executable', exe_path),
+            mock.patch.dict(os.environ, {'APPDATA': appdata}, clear=False),
+            mock.patch.object(core, 'dir_is_writable', return_value=writable),
+        )
+
+    def test_source_run_uses_project_root(self):
+        with mock.patch.object(core, 'is_frozen', return_value=False):
+            self.assertEqual(core.app_home_dir(), os.path.dirname(core.PACKAGE_DIR))
+
+    def test_frozen_uses_the_directory_next_to_the_exe(self):
+        exe_dir = os.path.join(self.tmp, 'app')
+        os.makedirs(exe_dir)
+        patches = self._with_frozen(os.path.join(exe_dir, 'wallpaper-cleaner.exe'),
+                                    os.path.join(self.tmp, 'appdata'), writable=True)
+        with patches[0], patches[1], patches[2], patches[3]:
+            self.assertEqual(core.app_home_dir(), exe_dir)
+            self.assertFalse(core.home_dir_fallback())
+
+    def test_frozen_falls_back_when_the_exe_directory_is_read_only(self):
+        """放进 Program Files 或只读介质时退回 %APPDATA%，而不是直接失败"""
+        exe_dir = os.path.join(self.tmp, 'program-files')
+        os.makedirs(exe_dir)
+        appdata = os.path.join(self.tmp, 'appdata')
+        patches = self._with_frozen(os.path.join(exe_dir, 'wallpaper-cleaner.exe'),
+                                    appdata, writable=False)
+        with patches[0], patches[1], patches[2], patches[3]:
+            self.assertEqual(core.app_home_dir(), os.path.join(appdata, 'wallpaper-cleaner'))
+            # 退回这件事必须能被界面问出来，否则用户会去 exe 旁边找一个不存在的配置
+            self.assertTrue(core.home_dir_fallback())
+
+    def test_frozen_uses_meipass_sibling_not_the_temp_extract_dir(self):
+        """单文件模式下 sys._MEIPASS 是随进程消失的解压目录，绝不能拿它当数据目录"""
+        exe_dir = os.path.join(self.tmp, 'app')
+        os.makedirs(exe_dir)
+        extract = os.path.join(self.tmp, '_MEI123456')
+        os.makedirs(extract)
+        patches = self._with_frozen(os.path.join(exe_dir, 'wallpaper-cleaner.exe'),
+                                    os.path.join(self.tmp, 'appdata'), writable=True)
+        with patches[0], patches[1], patches[2], patches[3],                 mock.patch.object(sys, '_MEIPASS', extract, create=True):
+            self.assertEqual(core.app_home_dir(), exe_dir)
+
+    def test_env_override_wins_over_everything(self):
+        override = os.path.join(self.tmp, 'portable')
+        exe_dir = os.path.join(self.tmp, 'app')
+        os.makedirs(exe_dir)
+        patches = self._with_frozen(os.path.join(exe_dir, 'wallpaper-cleaner.exe'),
+                                    os.path.join(self.tmp, 'appdata'), writable=True)
+        with patches[0], patches[1], patches[2], patches[3],                 mock.patch.dict(os.environ, {'WALLPAPER_CLEANER_HOME': override}):
+            self.assertEqual(core.app_home_dir(), os.path.abspath(override))
+            self.assertFalse(core.home_dir_fallback())
+
+    def test_writability_probe_cleans_up_after_itself(self):
+        """探测会在目录里建一个临时文件，必须删掉：在用户自己的文件夹里留垃圾不可接受"""
+        core.dir_is_writable(self.tmp)
+        self.assertEqual(os.listdir(self.tmp), [])
+
+    def test_writability_probe_rejects_a_missing_directory(self):
+        self.assertFalse(core.dir_is_writable(os.path.join(self.tmp, 'nope')))
+
+
 if __name__ == '__main__':
     unittest.main()

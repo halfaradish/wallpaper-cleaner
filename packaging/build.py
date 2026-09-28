@@ -1,12 +1,18 @@
-"""一键本地构建 exe
+"""一键本地构建 exe 并打包成 zip
 
     python packaging/build.py
 
-会做三件事：
+会做四件事：
 1. 准备好 .venv-build 虚拟环境并安装 PyInstaller 与 requirements-desktop.txt
    （已存在就复用，不重复安装；不污染全局 Python）
-2. 用 packaging/wallpaper-cleaner.spec 打包
-3. 打印产物路径，并可选跑一次冒烟测试
+2. 用 packaging/wallpaper-cleaner.spec 打包出单文件 exe
+3. 把 exe 压成一个 zip（发布出去的就是它）
+4. 打印产物路径，并可选跑一次冒烟测试
+
+为什么发布 zip 而不是裸 exe：程序的配置与日志落在 exe 旁边（便携优先），
+所以用户需要一个"文件夹"的概念。浏览器下载一个裸 exe 通常直接落在下载目录，
+在那里生成 config.yml 与 logs/ 会显得很脏；zip 解压天然自带一层文件夹。
+zip 里只有 exe 一个文件，解压出来就是它。
 
 参数：
     --skip-deps    跳过虚拟环境准备（依赖已经装好时用，CI 里走这条路）
@@ -17,8 +23,10 @@
 import argparse
 import locale
 import os
+import re
 import subprocess
 import sys
+import zipfile
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VENV_DIR = os.path.join(PROJECT_ROOT, '.venv-build')
@@ -26,6 +34,36 @@ SPEC = os.path.join(PROJECT_ROOT, 'packaging', 'wallpaper-cleaner.spec')
 SMOKE = os.path.join(PROJECT_ROOT, 'packaging', 'smoke_test.py')
 REQUIREMENTS = os.path.join(PROJECT_ROOT, 'requirements-desktop.txt')
 EXE_NAME = 'wallpaper-cleaner.exe'
+DIST_DIR = os.path.join(PROJECT_ROOT, 'dist')
+
+
+def read_version():
+    """从 wallpaper_cleaner/__init__.py 读版本号，用于 zip 文件名
+
+    与 spec 里的读取方式保持一致（同一个正则），这样 exe 属性里的版本号与
+    zip 文件名不可能对不上。
+    """
+    path = os.path.join(PROJECT_ROOT, 'wallpaper_cleaner', '__init__.py')
+    with open(path, 'r', encoding='utf-8') as f:
+        match = re.search(r"^__version__\s*=\s*['\"]([^'\"]+)['\"]", f.read(), re.M)
+    if not match:
+        raise SystemExit('无法从 wallpaper_cleaner/__init__.py 读取 __version__')
+    return match.group(1)
+
+
+def make_zip(exe_path, version):
+    """把 exe 压进 dist/wallpaper-cleaner-<版本>.zip，返回 zip 路径
+
+    压缩级别用默认的 deflate：exe 里大部分是已压缩过的字节码与二进制，
+    级别调到 9 也只多省几个百分点，却要多花好几秒。
+    """
+    zip_path = os.path.join(DIST_DIR, f'wallpaper-cleaner-{version}.zip')
+    if os.path.exists(zip_path):
+        os.remove(zip_path)
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        # arcname 只给文件名：解压出来就是裸的一个 exe，不带任何目录层级
+        zf.write(exe_path, arcname=EXE_NAME)
+    return zip_path
 
 
 def _force_utf8_console():
@@ -155,17 +193,23 @@ def main():
         SPEC,
     ], cwd=PROJECT_ROOT)
 
-    exe_path = os.path.join(PROJECT_ROOT, 'dist', EXE_NAME)
+    exe_path = os.path.join(DIST_DIR, EXE_NAME)
     if not os.path.exists(exe_path):
         print(f'[build] 构建失败：没有找到 {exe_path}', file=sys.stderr)
         return 1
 
     size_mb = os.path.getsize(exe_path) / 1024 / 1024
-    print(f'[build] 产物: {exe_path} ({size_mb:.1f} MB)', flush=True)
+    print(f'[build] exe: {exe_path} ({size_mb:.1f} MB)', flush=True)
+
+    version = read_version()
+    zip_path = make_zip(exe_path, version)
+    zip_mb = os.path.getsize(zip_path) / 1024 / 1024
+    print(f'[build] 发布产物: {zip_path} ({zip_mb:.1f} MB)', flush=True)
 
     if not args.skip_smoke:
-        # 冒烟测试用系统 Python 即可，它只发 HTTP 请求
-        run([sys.executable, SMOKE, exe_path], cwd=PROJECT_ROOT)
+        # 冒烟测试吃 zip：测的就是要发出去的那个文件，解压、找 exe、跑起来，
+        # 顺带验证"配置落在 exe 旁边"这条新默认行为
+        run([sys.executable, SMOKE, zip_path], cwd=PROJECT_ROOT)
 
     return 0
 

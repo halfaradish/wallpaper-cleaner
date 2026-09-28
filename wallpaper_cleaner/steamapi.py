@@ -20,6 +20,7 @@ Engine 自己跟 Steam 通信走的是同一条通道。拿到 ISteamUGC 接口�
 """
 
 import ctypes
+import locale
 import os
 import subprocess
 import sys
@@ -199,7 +200,15 @@ def steam_running():
             # 加个创建标志就行，判定不受影响——输出走管道，本来就不需要那个控制台。
             # 该常量只有 Windows 上有，安全的前提是上面的 supported() 已经拦住了其它平台。
             creationflags=subprocess.CREATE_NO_WINDOW,
-            capture_output=True, text=True, timeout=15,
+            # 必须显式给 encoding 与 errors：tasklist 按系统 OEM 代码页输出，
+            # 而 text=True 默认按 UTF-8 解（本机 Python 开了 UTF-8 模式），进程名里
+            # 只要有一个非 ASCII 字符就会在读取线程里抛 UnicodeDecodeError。
+            # 那个异常发生在子线程，主线程只会拿到空输出，表现为"偶尔检测不到 Steam"，
+            # 同时日志里每次留一段看不懂的回溯。按本地代码页解、坏字节替换掉即可——
+            # 这里只做 ASCII 子串匹配，替换不影响判定。
+            capture_output=True, text=True,
+            encoding=locale.getpreferredencoding(False), errors='replace',
+            timeout=15,
         ).stdout or ''
     except Exception:
         return True

@@ -1,0 +1,118 @@
+/* 视图：页面级排布
+   ==========================================================================
+   三个视图（待清理 / 已订阅 / 设置）共用外壳，各自的排布写在这里。
+   视图本身是一个 flex 纵向列，唯一能长高的部分是表格或设置面板——
+   这样"哪块能滚、哪块不能滚"在结构上就是确定的，不靠 max-height 去猜。
+   ========================================================================== */
+
+/* ==========================================================================
+   待清理 / 已订阅：表格视图
+   ========================================================================== */
+
+/* 表格上方的说明与筛选行。只有已订阅视图用得到（待清理没有筛选） */
+.view-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding-bottom: var(--sp-3);
+  flex: none;
+}
+
+.view-hint {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  font-size: var(--fs-label);
+}
+
+.view-tools .search-wrap { width: min(280px, 40%); flex: none; }
+
+/* ==========================================================================
+   设置视图
+   ========================================================================== */
+
+.settings {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--sp-4);
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  align-content: start;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-5);
+  border: 1px solid var(--border);
+  border-radius: var(--r-panel);
+  background: var(--surface);
+  box-shadow: var(--edge-highlight);
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.panel-title {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-title);
+  font-weight: 600;
+}
+
+.panel-actions {
+  display: flex;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+/* 键值对：路径可能很长，必须允许在任意位置断行，否则会把面板撑破 */
+.meta-list {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--sp-1) var(--sp-3);
+  margin: 0;
+  font-size: var(--fs-label);
+}
+
+.meta-list dt { color: var(--muted); white-space: nowrap; }
+
+.meta-list dd {
+  margin: 0;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+/* 日志面板：日志本身要能长高，所以它内部滚动，面板不滚 */
+.panel-log .log { flex: 1; min-height: 240px; max-height: none; }
+
+/* 宽屏下分两栏：左边是设置与关于，右边整列留给日志。
+   日志是唯一需要纵向空间的块，给它一整列比让它压在两张卡片下面合理。 */
+@media (min-width: 1024px) {
+  .settings { grid-template-columns: minmax(320px, 400px) minmax(0, 1fr); }
+  .panel-log { grid-column: 2; grid-row: 1 / span 3; }
+}
+
+/* ==========================================================================
+   窄屏
+   ========================================================================== */
+
+/* 900px 以下：表格的次要列让位。列宽是这里唯一不能通融的东西——
+   标题列被挤到看不见，这张表就没法用了。 */
+@media (max-width: 1023px) {
+  .col-kind { display: none; }
+}
+
+@media (max-width: 899px) {
+  /* 标注大小与磁盘占用只能留一个，留磁盘占用：它才是"删了能腾多少"的答案 */
+  .col-declared { display: none; }
+  .col-id { width: 104px; }
+  .view-tools .search-wrap { width: 100%; }
+  .view-tools { flex-wrap: wrap; row-gap: var(--sp-2); }
+}

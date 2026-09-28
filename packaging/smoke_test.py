@@ -1,13 +1,21 @@
-"""打包产物的冒烟测试：确认 exe 真的能跑起来，而不只是「构建成功」
+"""打包产物的冒烟测试：确认发布出去的 zip 真的能用，而不只是「构建成功」
 
-    python packaging/smoke_test.py dist/wallpaper-cleaner.exe
+    python packaging/smoke_test.py dist/wallpaper-cleaner-0.5.0.zip
+    python packaging/smoke_test.py dist/wallpaper-cleaner.exe        # 也接受裸 exe
 
-做法：用 --web --no-browser 启动 exe，轮询面板接口直到拿到页面，然后结束进程。
+做法：解压 zip，把 exe 复制到一个干净的临时目录，用 --web --no-browser 启动它，
+轮询面板接口直到拿到页面，然后结束进程。
 
 刻意不碰 WebView2 —— 这样在没有桌面会话的 CI 上也能稳定运行，同时覆盖了打包后
-最容易碎的两点：
+最容易碎的几点：
 1. bundle 里的 import 是否完整（缺 hidden import 时进程会立刻退出）
 2. 前端静态资源有没有被打进去（缺了会返回 500，页面拿不到）
+3. 配置、日志、界面偏好是否落在 exe 旁边（这是发布形态的一部分，
+   在源码运行下测不出来）
+
+刻意不设 WALLPAPER_CLEANER_HOME：那个环境变量会把落盘位置强行改到别处，
+于是"配置落在 exe 旁边"这条最需要验证的默认行为刚好被屏蔽掉。
+把 exe 复制到临时目录里跑，临时目录本身就是沙箱，不需要额外的隔离手段。
 
 退出码 0 表示通过。
 """
@@ -15,6 +23,9 @@
 import json
 import locale
 import os
+import posixpath
+import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -22,9 +33,11 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import zipfile
 
 STARTUP_TIMEOUT = 120      # 单文件 exe 首次启动要解压，慢一点正常
 POLL_INTERVAL = 1.0
+EXE_NAME = 'wallpaper-cleaner.exe'
 
 
 def _force_utf8_console():
@@ -75,6 +88,78 @@ def fetch(url, timeout=5):
         return None, None
 
 
+def check_assets(port, html):
+    """把首页引用到的静态资源、以及它们 import 到的模块全部取一遍
+
+    返回检查过的资源个数。任何一个取不到就抛 SystemExit。
+    PyInstaller 的 datas 是整目录拷贝，理论上不会漏；但这条检查的价值在于：
+    只要漏了，这里是"打包后跑一遍"的最后一道闸，而不是等用户打开面板才发现某块功能没了。
+    """
+    pattern = re.compile(r"""(?:href|src)="(/static/[^"]+)"|from\s+['"](\.[^'"]+)['"]""")
+    pending = [ref for ref in re.findall(r'(?:href|src)="(/static/[^"]+)"', html)]
+    seen = set()
+
+    while pending:
+        asset = pending.pop()
+        if asset in seen:
+            continue
+        seen.add(asset)
+        status, body = fetch(f'http://127.0.0.1:{port}{asset}')
+        if status != 200 or not body:
+            raise SystemExit(f'[smoke] 失败：静态资源 {asset} 不可用（HTTP {status}）')
+        # 顺着相对 import 继续走：模块图里任何一环缺失都会在这里暴露
+        for _static_ref, relative in pattern.findall(body):
+            if not relative:
+                continue
+            resolved = posixpath.normpath(
+                posixpath.join(posixpath.dirname(asset), relative)
+            )
+            pending.append(resolved)
+
+    if len(seen) < 5:
+        raise SystemExit(f'[smoke] 失败：只找到 {len(seen)} 个静态资源，模块图似乎没走通')
+    return len(seen)
+
+
+def check_prefs(port, home, html):
+    """界面偏好：读默认值 → 写一个值 → 确认落在 exe 旁边 → 确认首页第一帧就带着它
+
+    首页那一帧很关键：主题如果等页面加载完再问一次接口，用户选了深色而系统是浅色时
+    会先闪一下浅色。所以它必须像 token 一样由服务端注入。
+    """
+    token = re.search(r'name="panel-token" content="([^"]+)"', html)
+    if not token:
+        raise SystemExit('[smoke] 失败：首页里取不到面板 token')
+
+    status, body = fetch(f'http://127.0.0.1:{port}/api/prefs')
+    if status != 200 or '"theme"' not in (body or ''):
+        raise SystemExit(f'[smoke] 失败：/api/prefs 返回 HTTP {status}')
+
+    request = urllib.request.Request(
+        f'http://127.0.0.1:{port}/api/prefs',
+        data=json.dumps({'theme': 'dark'}).encode('utf-8'),
+        method='POST',
+        headers={'Content-Type': 'application/json', 'X-Panel-Token': token.group(1)},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as res:
+            if res.status != 200:
+                raise SystemExit(f'[smoke] 失败：写入界面偏好返回 HTTP {res.status}')
+    except urllib.error.HTTPError as e:
+        raise SystemExit(f'[smoke] 失败：写入界面偏好返回 HTTP {e.code}: {e.read()[:120]}')
+
+    prefs_file = os.path.join(home, 'prefs.json')
+    if not os.path.exists(prefs_file):
+        raise SystemExit(f'[smoke] 失败：界面偏好没有写到 {prefs_file}')
+    with open(prefs_file, 'r', encoding='utf-8') as f:
+        if json.load(f).get('theme') != 'dark':
+            raise SystemExit('[smoke] 失败：界面偏好的内容不对')
+
+    _status, page = fetch(f'http://127.0.0.1:{port}/')
+    if 'data-theme="dark"' not in (page or ''):
+        raise SystemExit('[smoke] 失败：存下来的主题没有注入首页第一帧')
+
+
 def wait_for_panel(port, process, deadline):
     """等到面板开始响应，返回首页 HTML"""
     last_note = ''
@@ -112,17 +197,47 @@ def stop(process):
         process.kill()
 
 
+def unpack_artifact(path):
+    """把待测产物准备成一个可执行的 exe，返回 (exe 路径, 运行目录)
+
+    给 zip 就解压：顺便断言"解压出来只有一个 exe"——那是发布形态的一部分，
+    多塞了文件用户就会多一份不知道能不能删的东西。
+    给 exe 就直接用。
+    两种情况下都会把 exe 复制到一个干净的临时目录再返回，这样"配置落在 exe 旁边"
+    就落在那个临时目录里，不会污染 dist/ 或仓库。
+    """
+    work = tempfile.mkdtemp(prefix='wc-smoke-')
+    if path.lower().endswith('.zip'):
+        with zipfile.ZipFile(path) as zf:
+            names = zf.namelist()
+            if names != [EXE_NAME]:
+                raise SystemExit(
+                    f'[smoke] 失败：zip 里应当只有 {EXE_NAME} 一个文件，实际是 {names}'
+                )
+            zf.extractall(work)
+        print(f'[smoke] 已解压 {os.path.basename(path)}', flush=True)
+    else:
+        shutil.copy2(path, os.path.join(work, os.path.basename(path)))
+    exe = os.path.join(work, EXE_NAME if os.path.exists(os.path.join(work, EXE_NAME))
+                       else os.path.basename(path))
+    if not os.path.exists(exe):
+        raise SystemExit(f'[smoke] 失败：产物里没有找到可执行文件（{work}）')
+    return exe, work
+
+
 def main():
     _force_utf8_console()
 
     if len(sys.argv) < 2:
-        print('用法: python packaging/smoke_test.py <exe 路径>', file=sys.stderr)
+        print('用法: python packaging/smoke_test.py <zip 或 exe 路径>', file=sys.stderr)
         return 2
 
-    exe = os.path.abspath(sys.argv[1])
-    if not os.path.exists(exe):
-        print(f'[smoke] 找不到可执行文件: {exe}', file=sys.stderr)
+    artifact = os.path.abspath(sys.argv[1])
+    if not os.path.exists(artifact):
+        print(f'[smoke] 找不到产物: {artifact}', file=sys.stderr)
         return 2
+
+    exe, home = unpack_artifact(artifact)
 
     # 先查依赖：缺 pywebview / pythonnet 时 PyInstaller 只打一行 ERROR 就继续，
     # 产出的 exe 浏览器面板能用、桌面窗口打不开，不看这一步发现不了
@@ -134,12 +249,13 @@ def main():
         raise SystemExit(f'[smoke] 失败：桌面窗口依赖不齐全（退出码 {probe.returncode}）')
 
     port = free_port()
-    # 把配置与日志写到临时目录，避免污染真实的 %APPDATA%
-    home = tempfile.mkdtemp(prefix='wc-smoke-')
+    # 刻意不设 WALLPAPER_CLEANER_HOME：要测的就是"配置落在 exe 旁边"这条默认行为，
+    # 而那个变量会把它改到别处，等于把最该验的东西屏蔽掉。exe 已经在一个临时目录里，
+    # 所以不需要额外的隔离。
     env = dict(os.environ)
-    env['WALLPAPER_CLEANER_HOME'] = home
+    env.pop('WALLPAPER_CLEANER_HOME', None)
 
-    print(f'[smoke] 启动 {os.path.basename(exe)}（端口 {port}，配置目录 {home}）', flush=True)
+    print(f'[smoke] 启动 {os.path.basename(exe)}（端口 {port}，运行目录 {home}）', flush=True)
     process = subprocess.Popen(
         [exe, '--web', '--no-browser', '--host', '127.0.0.1', '--port', str(port)],
         env=env,
@@ -151,15 +267,24 @@ def main():
         html = wait_for_panel(port, process, time.time() + STARTUP_TIMEOUT)
         print('[smoke] 面板首页已返回', flush=True)
 
-        # 静态资源是打包时最容易漏的东西，单独确认一遍
-        for asset, needle in (
-            ('/static/style.css', '--accent'),
-            ('/static/app.js', '__PANEL_TOKEN__'),
-        ):
-            status, body = fetch(f'http://127.0.0.1:{port}{asset}')
-            if status != 200 or not body or needle not in body:
-                raise SystemExit(f'[smoke] 失败：静态资源 {asset} 不可用（HTTP {status}）')
-            print(f'[smoke] {asset} 正常', flush=True)
+        # 首页本身：token 占位符必须被替换掉。没换掉的话面板拿不到 token，
+        # 页面看着正常，但所有写操作都会 403——只看"首页返回 200"发现不了。
+        if '__PANEL_TOKEN_VALUE__' in html or 'name="panel-token"' not in html:
+            raise SystemExit('[smoke] 失败：面板首页的 token 占位符没有被替换')
+        if '__PANEL_THEME_VALUE__' in html or 'data-theme=' not in html:
+            raise SystemExit('[smoke] 失败：面板首页的主题占位符没有被替换')
+        print('[smoke] 首页 token 与主题注入正常', flush=True)
+
+        # 界面偏好要能真的落在 exe 旁边：写不进去的话主题每次启动都会被忘掉，
+        # 而这一点在源码运行下测不出来
+        check_prefs(port, home, html)
+        print('[smoke] 界面偏好可读写', flush=True)
+
+        # 静态资源是打包时最容易漏的东西。前端拆成多个模块后，漏一个文件不会让页面
+        # 打不开，只会让某块功能静默失效——所以这里顺着 import 把整张模块图走一遍，
+        # 而不只是确认首页引用的那几个文件在。
+        count = check_assets(port, html)
+        print(f'[smoke] 静态资源全部可用（{count} 个）', flush=True)
 
         # 接口可用性
         status, body = fetch(f'http://127.0.0.1:{port}/api/state')
@@ -168,14 +293,23 @@ def main():
         payload = json.loads(body)
         if 'paths' not in payload or 'version' not in payload:
             raise SystemExit('[smoke] 失败：/api/state 返回结构异常')
+        if payload.get('home_fallback'):
+            raise SystemExit(
+                f'[smoke] 失败：配置目录退回了 %APPDATA%（{home} 应当是可写的）'
+            )
         print(f"[smoke] /api/state 正常（版本 {payload['version']}）", flush=True)
 
-        # 日志文件应当写在指定目录里，而不是 exe 旁边
+        # 落盘位置是发布形态的一部分：需要写的东西都必须就在 exe 旁边，
+        # 这样用户挪走或删掉这个文件夹就等于搬家或卸载。
+        # 这里查 prefs.json 与 logs/：面板启动就会写它们（config.yml 只由
+        # 命令行首次运行生成，面板路径不碰它，所以不能拿来当断言）。
         log_dir = os.path.join(home, 'logs')
         logs = os.listdir(log_dir) if os.path.isdir(log_dir) else []
         if not logs:
-            raise SystemExit('[smoke] 失败：没有在 WALLPAPER_CLEANER_HOME 下生成日志')
-        print(f'[smoke] 日志已写入 {log_dir}', flush=True)
+            raise SystemExit(f'[smoke] 失败：没有在 exe 旁边生成日志（{log_dir}）')
+        if not os.path.exists(os.path.join(home, 'prefs.json')):
+            raise SystemExit(f'[smoke] 失败：界面偏好没有生成在 exe 旁边（{home}）')
+        print(f'[smoke] 日志与界面偏好都落在 exe 旁边（{home}）', flush=True)
 
         print('[smoke] 通过', flush=True)
         return 0

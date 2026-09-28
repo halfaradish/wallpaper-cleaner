@@ -4,9 +4,14 @@
 
 三种用法：**下载 exe 双击即用**（不需要装 Python）、**浏览器管理面板**、**命令行一键清理**。
 
-## 下载 exe 直接用（推荐）
+## 下载 zip 解压即用（推荐）
 
-到 [Releases](../../releases) 下载 `wallpaper-cleaner.exe`，双击运行即可。不需要安装 Python，也不需要命令行。
+到 [Releases](../../releases) 下载 `wallpaper-cleaner-<版本>.zip`，**解压到一个自己的文件夹里**，双击里面的 `wallpaper-cleaner.exe` 即可。不需要安装 Python，也不需要命令行。
+
+> 请先解压再运行，不要直接在压缩包里双击。程序会把配置与日志写在 exe 旁边（见[配置与日志](docs/配置与日志.md)），
+> 直接双击压缩包里的 exe 时，Windows 会先把它解到临时目录再运行，配置就会跟着落在那个随时会被清掉的地方。
+
+解压后那个文件夹就是它的全部家当：`config.yml`、`prefs.json`、`logs/` 都在里面。想换台机器用、或者想彻底删掉，挪走或删除这一个文件夹就够了。
 
 启动后会弹出一个窗口：
 
@@ -32,7 +37,7 @@
 
 | 用法 | 最短上手方式 |
 |------|--------------|
-| 桌面窗口（推荐） | 下载 `wallpaper-cleaner.exe` 双击运行，见上一节 |
+| 桌面窗口（推荐） | 下载 zip 解压后双击 `wallpaper-cleaner.exe`，见上一节 |
 | 浏览器管理面板 | `wallpaper-cleaner.exe --web`，会自动打开 `http://127.0.0.1:8787/`，只监听本机；面板能做什么见[管理面板](docs/管理面板.md) |
 | 命令行清理 | 先 `--dry-run` 预览将要删除的内容，确认无误后去掉 `--dry-run` 再跑一次；全部参数见[命令行](docs/命令行.md) |
 
@@ -54,7 +59,7 @@
 
 ```bash
 python -m unittest discover -s tests -v   # 运行测试
-python packaging/build.py                 # 打包 exe：建 .venv-build、装依赖、跑测试、冒烟测试
+python packaging/build.py                 # 打包：建 .venv-build、装依赖、跑测试、出 exe 与 zip、冒烟测试
 python packaging/build.py --skip-deps     # 依赖已就绪时只重新打包
 ```
 
