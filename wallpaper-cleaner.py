@@ -36,6 +36,8 @@ def build_parser():
     parser.add_argument('--dry-run', action='store_true', help='只预览将要删除的内容，不实际删除')
     parser.add_argument('--check-deps', action='store_true',
                         help='检查桌面窗口所需的依赖是否齐全，然后退出')
+    parser.add_argument('--verbose', action='store_true',
+                        help='文件日志记录 DEBUG 全量过程（默认只记 INFO 及以上）')
     parser.add_argument('--version', action='version', version=f'wallpaper-cleaner {__version__}')
     return parser
 
@@ -81,6 +83,10 @@ def _run_desktop(args):
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+
+    # 必须赶在任何 setup_logger 之前生效：文件日志记不记 DEBUG 由它决定
+    if args.verbose:
+        core.verbose = True
 
     # 打包后没有控制台，走命令行路径前先把输出接回调用它的终端
     if core.is_frozen():

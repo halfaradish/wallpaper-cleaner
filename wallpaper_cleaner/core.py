@@ -155,9 +155,22 @@ class ScanError(Exception):
     """扫描或删除过程中的可预期错误"""
 
 
-def setup_logger():
-    """初始化日志：控制台 INFO（有控制台时）+ 文件 DEBUG（单文件 5MB，保留 5 个备份）
+# 文件日志的级别开关：命令行入口解析到 --verbose 时置 True。放在模块级而不是
+# setup_logger 的参数上，是因为 CLI / 桌面 / 面板三条路径都会各自触发初始化，
+# 首次调用决定一切，全局开关最省心。
+verbose = False
 
+# 日志保留天数：按天命名的日志文件超过这个期限就在启动时清理
+LOG_RETENTION_DAYS = 14
+
+
+def setup_logger():
+    """初始化日志：控制台 INFO（有控制台时）+ 文件默认 INFO（--verbose 时 DEBUG；
+    单文件 5MB，保留 5 个备份），并顺手清理超过保留期的旧日志
+
+    文件日志默认不记 DEBUG：HTTP 访问行与 Steam 记录这类过程行一天能刷出几百行，
+    日常只有排障才需要，用 --verbose 打开全量。错误与堆栈走 error/exception，
+    不受降级影响。
     重复调用安全（CLI 与面板可能都会触发）。
     """
     global _logger_ready
@@ -187,13 +200,45 @@ def setup_logger():
     file_handler = RotatingFileHandler(
         current_log_path(), maxBytes=5 * 1024 * 1024, backupCount=5, encoding='utf-8'
     )
-    file_handler.setLevel(logging.DEBUG)
+    file_handler.setLevel(logging.DEBUG if verbose else logging.INFO)
     file_fmt = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
     file_handler.setFormatter(file_fmt)
     logger.addHandler(file_handler)
 
+    removed = cleanup_old_logs()
+    if removed:
+        logger.info('已清理 %d 个超过 %d 天的日志文件', removed, LOG_RETENTION_DAYS)
+
     _logger_ready = True
     return logger
+
+
+def cleanup_old_logs(keep_days=LOG_RETENTION_DAYS):
+    """删除 logs/ 里超过保留期的日志文件，返回删除的个数
+
+    日志按天命名（wallpaper-cleaner_YYYYMMDD.log），RotatingFileHandler 的轮转
+    备份（.log.1 ...）挂在当天的文件名上——轮转只管单日文件的大小，管不了历史
+    日期文件的堆积，这里按修改时间兜底回收。正在写入的当天文件不受影响。
+    """
+    if not os.path.isdir(log_dir):
+        return 0
+    cutoff = time.time() - keep_days * 86400
+    removed = 0
+    try:
+        names = sorted(os.listdir(log_dir))
+    except OSError:
+        return 0
+    for name in names:
+        if not re.match(r'^wallpaper-cleaner_\d{8}\.log(\.\d+)?$', name):
+            continue
+        path = os.path.join(log_dir, name)
+        try:
+            if os.path.getmtime(path) < cutoff:
+                os.remove(path)
+                removed += 1
+        except OSError:
+            continue   # 正被占用（比如用户开着日志文件）就留给下次启动
+    return removed
 
 
 def current_log_path():

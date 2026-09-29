@@ -97,13 +97,36 @@ export function saveConfig() {
    运行日志
    ========================================================================== */
 
+// 级别过滤：一行日志的级别由行首的 [LEVEL] 标记决定；没有标记的行是上一条的
+// 续行（异常堆栈之类），跟随上一条。日志按行数截尾，最前面的几行可能找不到
+// 上一条记录，过滤非「全部」时会随刀口一起丢掉。
+const LOG_LEVEL_ORDER = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'];
+const LOG_LEVEL_MARK = /\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]/;
+
+function filterLogLines(lines, minLevel) {
+  // 下拉的选项值是小写（debug/info/...），级别表是大写（与日志里的 [LEVEL] 一致），
+  // 查找前必须统一大小写——否则 indexOf 返回 -1，被当成「全部」直接放行
+  const min = LOG_LEVEL_ORDER.indexOf(String(minLevel || '').toUpperCase());
+  if (min <= 0) return lines;
+  const kept = [];
+  let last = -1;
+  for (const line of lines) {
+    const mark = line.match(LOG_LEVEL_MARK);
+    if (mark) last = LOG_LEVEL_ORDER.indexOf(mark[1]);
+    if (last >= min) kept.push(line);
+  }
+  return kept;
+}
+
 export function refreshLogs() {
   api(`/api/logs?lines=${LOG_LINES}`)
     .then((data) => {
       setText($('logs-meta'), data.path ? data.path : '还没有生成日志文件。');
       const body = $('logs-body');
       if (!body) return;
-      const text = (data.lines || []).join('\n');
+      const levelSel = $('log-level');
+      const minLevel = levelSel ? levelSel.value : 'info';
+      const text = filterLogLines(data.lines || [], minLevel).join('\n');
       // 只在内容真的变了才写回：每 2 秒重写一次会让用户没法选中复制，
       // 也会把滚动位置顶掉
       if (body.textContent === text) return;
@@ -259,4 +282,6 @@ export function initSettings() {
 
   const auto = $('opt-log-auto');
   if (auto) auto.addEventListener('change', syncLogTimer);
+  const logLevel = $('log-level');
+  if (logLevel) logLevel.addEventListener('change', refreshLogs);
 }

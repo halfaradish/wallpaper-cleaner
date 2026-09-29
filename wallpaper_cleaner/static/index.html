@@ -267,6 +267,12 @@
           <section class="panel panel-log">
             <div class="panel-head">
               <h2 class="panel-title">运行日志</h2>
+              <select id="log-level" class="input compact" aria-label="日志级别过滤">
+                <option value="debug">DEBUG</option>
+                <option value="info" selected>INFO</option>
+                <option value="warning">WARNING</option>
+                <option value="error">ERROR</option>
+              </select>
               <label class="check"><input type="checkbox" id="opt-log-auto" checked> 自动刷新</label>
             </div>
             <p class="hint" id="logs-meta">载入中…</p>
